@@ -1,0 +1,776 @@
+#!/usr/bin/env bash
+# =============================================================================
+# proj — Termux Terminal IDE / Workspace Manager
+# Version: 2.0.2
+# Location: ~/bin/proj
+# =============================================================================
+
+set -euo pipefail
+
+export PATH="$HOME/bin:/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/local/bin:$PATH"
+
+readonly PROJ_HOME="$HOME/.proj"
+readonly WS_DIR="$PROJ_HOME/workspaces"
+readonly RUN_DIR="$PROJ_HOME/run"
+readonly SESSION_DIR="$PROJ_HOME/sessions"
+readonly LAYOUT_DIR="$PROJ_HOME/layouts"
+readonly LOG_DIR="$PROJ_HOME/logs"
+readonly LOG_FILE="$LOG_DIR/proj.log"
+readonly VERSION="2.0.2"
+
+if [[ -t 1 ]]; then
+  C_RESET='\033[0m'
+  C_BOLD='\033[1m'
+  C_DIM='\033[2m'
+  C_CYAN='\033[36m'
+  C_GREEN='\033[32m'
+  C_YELLOW='\033[33m'
+  C_RED='\033[31m'
+  C_BLUE='\033[34m'
+  C_MAGENTA='\033[35m'
+  C_WHITE='\033[37m'
+else
+  C_RESET='' C_BOLD='' C_DIM='' C_CYAN='' C_GREEN=''
+  C_YELLOW='' C_RED='' C_BLUE='' C_MAGENTA='' C_WHITE=''
+fi
+
+declare -A TYPE_LABELS=(
+  [node]="Node"
+  [python]="Python"
+  [rust]="Rust"
+  [go]="Go"
+  [web]="Web"
+  [shell]="Shell"
+  [lua]="Lua"
+  [generic]="Generic"
+)
+
+declare -A TYPE_DEV_CMDS=(
+  [node]="npm run dev"
+  [python]="python main.py"
+  [rust]="cargo run"
+  [go]="go run ."
+  [web]=""
+  [shell]=""
+  [lua]=""
+  [generic]=""
+)
+
+_init_dirs() {
+  mkdir -p "$WS_DIR" "$RUN_DIR" "$SESSION_DIR" "$LAYOUT_DIR" "$LOG_DIR"
+}
+
+_log() {
+  local level="$1"; shift
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $*" >> "$LOG_FILE"
+}
+_info()  { _log INFO  "$*"; }
+_warn()  { _log WARN  "$*"; }
+_error() { _log ERROR "$*"; }
+
+_require() {
+  local cmd="$1"
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "Error: required tool not found: ${cmd}" >&2
+    exit 1
+  fi
+}
+
+_check_deps() {
+  _require tmux
+  _require jq
+  _require fzf
+  _require git
+  _require nvim
+}
+
+_detect_type() {
+  local path="$1"
+  [[ -f "$path/package.json" ]]     && echo "node"   && return
+  [[ -f "$path/pyproject.toml" ]]   && echo "python" && return
+  [[ -f "$path/setup.py" ]]         && echo "python" && return
+  [[ -f "$path/requirements.txt" ]] && echo "python" && return
+  [[ -f "$path/Cargo.toml" ]]       && echo "rust"   && return
+  [[ -f "$path/go.mod" ]]           && echo "go"     && return
+  [[ -f "$path/index.html" ]]       && echo "web"    && return
+  [[ -f "$path/init.lua" ]]         && echo "lua"    && return
+  local py_count
+  py_count=$(find "$path" -maxdepth 2 -name "*.py" 2>/dev/null | wc -l)
+  [[ $py_count -gt 2 ]] && echo "python" && return
+  echo "generic"
+}
+
+_detect_dev_cmd() {
+  local path="$1" type="$2"
+  case "$type" in
+    node)
+      local scripts
+      scripts=$(jq -r '.scripts // {} | keys[]' "$path/package.json" 2>/dev/null || true)
+      for candidate in dev start serve watch; do
+        if echo "$scripts" | grep -q "^${candidate}$"; then
+          echo "npm run $candidate"
+          return
+        fi
+      done
+      echo "npm install && npm run dev"
+      ;;
+    python)
+      [[ -f "$path/manage.py" ]] && echo "python manage.py runserver" && return
+      [[ -f "$path/app.py" ]]    && echo "python app.py"              && return
+      [[ -f "$path/main.py" ]]   && echo "python main.py"             && return
+      echo ""
+      ;;
+    rust) echo "cargo run" ;;
+    go)   echo "go run ."  ;;
+    *)    echo ""          ;;
+  esac
+}
+
+_git_branch() {
+  local path="$1"
+  git -C "$path" symbolic-ref --short HEAD 2>/dev/null \
+    || git -C "$path" rev-parse --short HEAD 2>/dev/null \
+    || echo ""
+}
+
+_git_dirty() {
+  local path="$1"
+  git -C "$path" diff --quiet 2>/dev/null && echo "" || echo "*"
+}
+
+_ws_file()   { echo "$WS_DIR/$1.json"; }
+_lock_file() { echo "$RUN_DIR/$1.lock"; }
+
+_ws_exists()   { [[ -f "$(_ws_file   "$1")" ]]; }
+_lock_exists() { [[ -f "$(_lock_file "$1")" ]]; }
+
+_ws_read() {
+  local name="$1" field="$2"
+  jq -r ".$field // empty" "$(_ws_file "$name")" 2>/dev/null
+}
+
+_ws_update_field() {
+  local name="$1" field="$2" value="$3"
+  local file tmp
+  file="$(_ws_file "$name")"
+  tmp=$(jq --arg v "$value" ".$field = \$v" "$file")
+  echo "$tmp" > "$file"
+}
+
+_ws_touch() {
+  _ws_update_field "$1" "last_opened" "$(date -Iseconds)"
+}
+
+_ws_register() {
+  local name="$1" path="$2" type="${3:-}" dev="${4:-}"
+  local file
+  file="$(_ws_file "$name")"
+  [[ -z "$type" ]] && type="$(_detect_type "$path")"
+  [[ -z "$dev"  ]] && dev="$(_detect_dev_cmd "$path" "$type")"
+  local now branch
+  now="$(date -Iseconds)"
+  branch="$(_git_branch "$path")"
+  if [[ -f "$file" ]]; then
+    local created_at
+    created_at="$(jq -r '.created_at // empty' "$file")"
+    jq -n \
+      --arg name    "$name"  \
+      --arg path    "$path"  \
+      --arg type    "$type"  \
+      --arg dev     "$dev"   \
+      --arg branch  "$branch" \
+      --arg last    "$now"   \
+      --arg created "${created_at:-$now}" \
+      '{name:$name,path:$path,type:$type,dev:$dev,branch:$branch,last_opened:$last,created_at:$created}' \
+      > "$file"
+  else
+    jq -n \
+      --arg name   "$name" \
+      --arg path   "$path" \
+      --arg type   "$type" \
+      --arg dev    "$dev"  \
+      --arg branch "$branch" \
+      --arg now    "$now"  \
+      '{name:$name,path:$path,type:$type,dev:$dev,branch:$branch,last_opened:$now,created_at:$now}' \
+      > "$file"
+  fi
+  _info "Registered workspace: name=$name path=$path type=$type"
+}
+
+_lock_read() {
+  local name="$1" field="$2"
+  local lf
+  lf="$(_lock_file "$name")"
+  [[ -f "$lf" ]] && jq -r ".$field // empty" "$lf" 2>/dev/null || echo ""
+}
+
+_lock_write() {
+  local name="$1" session="$2" nvim_pid="$3" server_pid="${4:-}" server_cmd="${5:-}"
+  jq -n \
+    --arg session    "$session"    \
+    --arg nvim_pid   "$nvim_pid"   \
+    --arg server_pid "$server_pid" \
+    --arg server_cmd "$server_cmd" \
+    --arg locked_at  "$(date -Iseconds)" \
+    '{session:$session,nvim_pid:$nvim_pid,server_pid:$server_pid,server_cmd:$server_cmd,locked_at:$locked_at}' \
+    > "$(_lock_file "$name")"
+}
+
+_lock_remove() { rm -f "$(_lock_file "$1")"; }
+
+_pid_alive() {
+  local pid="$1"
+  [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
+_cleanup_locks() {
+  local count=0
+  for lf in "$RUN_DIR"/*.lock; do
+    [[ -f "$lf" ]] || continue
+    local name session nvim_pid
+    name="$(basename "$lf" .lock)"
+    session="$(_lock_read "$name" session)"
+    nvim_pid="$(_lock_read "$name" nvim_pid)"
+    local session_alive=false pid_alive=false
+    tmux has-session -t "$session" 2>/dev/null && session_alive=true || true
+    _pid_alive "$nvim_pid" && pid_alive=true || true
+    if ! $session_alive && ! $pid_alive; then
+      _warn "Removing stale lock for: $name"
+      rm -f "$lf"
+      count=$((count + 1))
+    fi
+  done
+  [[ $count -gt 0 ]] && echo "  Cleaned $count stale lock(s)" || true
+}
+
+_nvim_session_file() { echo "$SESSION_DIR/$1.vim"; }
+
+_relative_time() {
+  local ts="$1"
+  [[ -z "$ts" ]] && echo "never" && return
+  local then now diff
+  then=$(date -d "$ts" +%s 2>/dev/null || echo 0)
+  now=$(date +%s)
+  diff=$((now - then))
+  if   [[ $diff -lt 60    ]]; then echo "just now"
+  elif [[ $diff -lt 3600  ]]; then echo "$((diff/60))m ago"
+  elif [[ $diff -lt 86400 ]]; then echo "$((diff/3600))h ago"
+  elif [[ $diff -lt 604800 ]]; then echo "$((diff/86400))d ago"
+  else echo "$((diff/604800))w ago"
+  fi
+}
+
+_ensure_layout() {
+  local type="$1"
+  local lf="$LAYOUT_DIR/${type}.conf"
+  [[ -f "$lf" ]] && return 0
+  echo "# Layout for type: $type" > "$lf"
+}
+
+_tmux_create_session() {
+  local session="$1" path="$2" type="$3" dev_cmd="$4" name="$5"
+  tmux new-session -d -s "$session" -n "nvim" -c "$path"
+  tmux split-window -h -p 30 -t "${session}:nvim" -c "$path"
+  if [[ -n "$dev_cmd" ]]; then
+    tmux split-window -v -p 50 -t "${session}:nvim" -c "$path"
+    tmux new-window -t "$session" -n "server" -c "$path"
+  fi
+  tmux new-window -t "$session" -n "shell" -c "$path"
+  tmux set-option -t "$session" automatic-rename off
+  tmux set-option -t "$session" allow-rename off
+  local type_label="${TYPE_LABELS[$type]:-Generic}"
+  tmux set-option -t "$session" @proj_name "$name"
+  tmux set-option -t "$session" @proj_type "$type_label"
+  tmux set-hook -t "$session" pane-died \
+    "run-shell 'proj _hook_pane_died #{session_name} #{window_name} $name'"
+}
+
+_tmux_launch_nvim() {
+  local session="$1" name="$2"
+  local session_file nvim_cmd
+  session_file="$(_nvim_session_file "$name")"
+  if [[ -f "$session_file" ]]; then
+    nvim_cmd="nvim -S '$session_file'"
+  else
+    nvim_cmd="nvim -c 'NvimTreeOpen' ."
+  fi
+  tmux send-keys -t "${session}:nvim" "$nvim_cmd" Enter
+}
+
+_tmux_launch_server() {
+  local session="$1" dev_cmd="$2"
+  tmux send-keys -t "${session}:server" "$dev_cmd" Enter
+}
+
+_hook_pane_died() {
+  local session="$1" window="$2" name="$3"
+  if [[ "$window" == "nvim" ]]; then
+    _info "Editor pane exited for workspace: $name"
+    if _lock_exists "$name"; then
+      local server_pid server_cmd
+      server_pid="$(_lock_read "$name" server_pid)"
+      server_cmd="$(_lock_read "$name" server_cmd)"
+      _lock_write "$name" "$session" "" "$server_pid" "$server_cmd"
+    fi
+  fi
+}
+
+_pick_workspace() {
+  local prompt="${1:-Open project: }"
+  _cleanup_locks
+
+  local found=false
+  for f in "$WS_DIR"/*.json; do
+    [[ -f "$f" ]] && found=true && break
+  done
+
+  if ! $found; then
+    echo "No workspaces registered yet. Use: proj add <path>" >&2
+    return 1
+  fi
+
+  local selected_name
+  selected_name=$(
+    for f in "$WS_DIR"/*.json; do
+      [[ -f "$f" ]] || continue
+      local n type branch last rel_time
+      n="$(jq -r '.name' "$f")"
+      type="$(jq -r '.type // "generic"' "$f")"
+      branch="$(jq -r '.branch // ""' "$f")"
+      last="$(jq -r '.last_opened // ""' "$f")"
+      rel_time="$(_relative_time "$last")"
+      printf "%s\t%s\t%s\t%s\n" "$n" "$type" "${branch:-—}" "$rel_time"
+    done \
+    | fzf \
+        --delimiter='\t' \
+        --with-nth=1,2,3,4 \
+        --prompt="  $prompt" \
+        --height=50% \
+        --border=rounded \
+        --header="  NAME             TYPE       BRANCH    LAST OPENED" \
+        --preview="proj _preview {1}" \
+        --preview-window="right:40%:wrap" \
+    | awk -F'\t' '{print $1}'
+  ) || return 1
+
+  echo "$selected_name"
+}
+
+_preview_workspace() {
+  local name="$1"
+  local file
+  file="$(_ws_file "$name")"
+  [[ -f "$file" ]] || { echo "Workspace not found: $name"; return; }
+  local path type dev branch last_opened
+  path="$(jq -r '.path' "$file")"
+  type="$(jq -r '.type' "$file")"
+  dev="$(jq -r  '.dev // ""' "$file")"
+  branch="$(_git_branch "$path" 2>/dev/null || echo "—")"
+  last_opened="$(jq -r '.last_opened // ""' "$file")"
+  local rel_time
+  rel_time="$(_relative_time "$last_opened")"
+  local status_line="idle"
+  if _lock_exists "$name"; then
+    local session
+    session="$(_lock_read "$name" session)"
+    tmux has-session -t "$session" 2>/dev/null && status_line="live (session: $session)" || true
+  fi
+  local has_session="no"
+  [[ -f "$(_nvim_session_file "$name")" ]] && has_session="yes (will restore)"
+  local git_log
+  git_log=$(git -C "$path" log --oneline -5 2>/dev/null || echo "  (not a git repo)")
+  printf "  %s\n" "$name"
+  printf "  -----------------------------------\n"
+  printf "  %-14s  %s\n" "Type"         "$type"
+  printf "  %-14s  %s\n" "Path"         "$path"
+  printf "  %-14s  %s\n" "Branch"       "$branch"
+  printf "  %-14s  %s\n" "Dev command"  "${dev:-—}"
+  printf "  %-14s  %s\n" "Last opened"  "$rel_time"
+  printf "  %-14s  %s\n" "Status"       "$status_line"
+  printf "  %-14s  %s\n" "nvim session" "$has_session"
+  printf "\n  Recent commits:\n"
+  echo "$git_log" | while IFS= read -r line; do
+    printf "  %s\n" "$line"
+  done
+}
+
+_open_workspace() {
+  local name="$1"
+  if ! _ws_exists "$name"; then
+    echo "Unknown workspace: $name"
+    echo "Register it with: proj add <path>"
+    return 1
+  fi
+  local path type dev_cmd
+  path="$(_ws_read "$name" path)"
+  type="$(_ws_read "$name" type)"
+  dev_cmd="$(_ws_read "$name" dev)"
+  if [[ ! -d "$path" ]]; then
+    echo "Project directory not found: $path"
+    return 1
+  fi
+  local branch
+  branch="$(_git_branch "$path")" || branch=""
+  _ws_update_field "$name" "branch" "$branch"
+  _ws_touch "$name"
+  local session
+  session="proj-$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-*$//')"
+  if tmux has-session -t "$session" 2>/dev/null; then
+    _info "Attaching to existing session: $session"
+    echo "Resuming: $name"
+    tmux attach-session -t "$session"
+    return 0
+  fi
+  echo "Opening: $name  [${TYPE_LABELS[$type]:-$type}]"
+  _info "Opening workspace: name=$name session=$session path=$path"
+  _ensure_layout "$type"
+  _tmux_create_session "$session" "$path" "$type" "$dev_cmd" "$name"
+  _tmux_launch_nvim "$session" "$name"
+  sleep 0.3
+  if [[ -n "$dev_cmd" ]]; then
+    _tmux_launch_server "$session" "$dev_cmd"
+  fi
+  _lock_write "$name" "$session" "" "" "$dev_cmd"
+  tmux select-window -t "${session}:nvim" 2>/dev/null || true
+  _info "Attaching to session: $session"
+  tmux attach-session -t "$session"
+}
+
+cmd_add() {
+  local path="${1:-}" name="${2:-}"
+  [[ -z "$path" ]] && path="$(pwd)"
+  path="$(realpath "$path")"
+  if [[ ! -d "$path" ]]; then
+    echo "Directory not found: $path"
+    return 1
+  fi
+  [[ -z "$name" ]] && name="$(basename "$path")"
+  name="$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9._-' '-' | sed 's/-*$//')"
+  _ws_register "$name" "$path"
+  echo "Registered: $name"
+  echo "  Type: $(_ws_read "$name" type)"
+  echo "  Dev:  $(_ws_read "$name" dev)"
+}
+
+cmd_open() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    name="$(_pick_workspace "Open project: ")" || return 1
+  fi
+  _open_workspace "$name"
+}
+
+cmd_switch() {
+  local name
+  name="$(_pick_workspace "Switch to: ")" || return 1
+  _open_workspace "$name"
+}
+
+cmd_cd() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    name="$(_pick_workspace "cd into: ")" || return 1
+  fi
+  if ! _ws_exists "$name"; then
+    echo "Unknown workspace: $name"
+    return 1
+  fi
+  local path
+  path="$(_ws_read "$name" path)"
+  if [[ ! -d "$path" ]]; then
+    echo "Directory not found: $path"
+    return 1
+  fi
+  echo "$path"
+}
+
+cmd_list() {
+  local found=false
+  printf "\n  %-20s  %-10s  %-16s  %-12s  %s\n" "NAME" "TYPE" "BRANCH" "LAST OPENED" "STATUS"
+  printf "  %s\n" "----------------------------------------------------------------"
+  for f in "$WS_DIR"/*.json; do
+    [[ -f "$f" ]] || continue
+    found=true
+    local name type branch last path rel_time live_str
+    name="$(jq -r '.name // ""' "$f")"
+    type="$(jq -r '.type // "generic"' "$f")"
+    path="$(jq -r '.path // ""' "$f")"
+    branch="$(jq -r '.branch // ""' "$f")"
+    last="$(jq -r '.last_opened // ""' "$f")"
+    rel_time="$(_relative_time "$last")"
+    live_str="idle"
+    if _lock_exists "$name"; then
+      local session
+      session="$(_lock_read "$name" session)"
+      tmux has-session -t "$session" 2>/dev/null && live_str="live" || true
+    fi
+    printf "  %-20s  %-10s  %-16s  %-12s  %s\n" \
+      "$name" "$type" "${branch:-—}" "$rel_time" "$live_str"
+  done
+  if ! $found; then
+    echo "  No workspaces registered."
+  fi
+  printf "\n"
+}
+
+cmd__list_raw() {
+  for f in "$WS_DIR"/*.json; do
+    [[ -f "$f" ]] && basename "$f" .json
+  done | sort
+}
+
+cmd_status() {
+  local name="${1:-}"
+  _cleanup_locks
+  _status_one() {
+    local n="$1"
+    local file
+    file="$(_ws_file "$n")"
+    [[ -f "$file" ]] || return
+    local type
+    type="$(jq -r '.type' "$file")"
+    printf "\n  %s  [%s]\n" "$n" "${TYPE_LABELS[$type]:-$type}"
+    if _lock_exists "$n"; then
+      local session nvim_pid server_pid locked_at
+      session="$(_lock_read    "$n" session)"
+      nvim_pid="$(_lock_read   "$n" nvim_pid)"
+      server_pid="$(_lock_read "$n" server_pid)"
+      locked_at="$(_lock_read  "$n" locked_at)"
+      if tmux has-session -t "$session" 2>/dev/null; then
+        printf "  Session: %s  (since %s)\n" "$session" "$(_relative_time "$locked_at")"
+      else
+        printf "  Session: %s (dead)\n" "$session"
+      fi
+      _pid_alive "$nvim_pid"   && printf "  nvim PID: %s\n" "$nvim_pid"   || true
+      _pid_alive "$server_pid" && printf "  server PID: %s\n" "$server_pid" || true
+    else
+      printf "  idle\n"
+    fi
+    [[ -f "$(_nvim_session_file "$n")" ]] && printf "  nvim session file exists\n" || true
+  }
+  if [[ -n "$name" ]]; then
+    _status_one "$name"
+  else
+    for f in "$WS_DIR"/*.json; do
+      [[ -f "$f" ]] || continue
+      _status_one "$(basename "$f" .json)"
+    done
+  fi
+  printf "\n"
+}
+
+cmd_kill() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && { name="$(_pick_workspace "Kill session: ")" || return 1; }
+  if _lock_exists "$name"; then
+    local session server_pid
+    session="$(_lock_read    "$name" session)"
+    server_pid="$(_lock_read "$name" server_pid)"
+    _pid_alive "$server_pid" && kill "$server_pid" 2>/dev/null && echo "Server stopped" || true
+    if tmux has-session -t "$session" 2>/dev/null; then
+      tmux kill-session -t "$session"
+      echo "Session killed: $session"
+    fi
+    _lock_remove "$name"
+  else
+    echo "Session not running: $name"
+  fi
+}
+
+cmd_delete() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && { name="$(_pick_workspace "Delete workspace: ")" || return 1; }
+  if ! _ws_exists "$name"; then
+    echo "Workspace not found: $name"
+    return 1
+  fi
+  read -rp "  Delete workspace '$name'? This won't touch your files. [y/N] " confirm
+  [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Cancelled."; return 0; }
+  cmd_kill "$name" 2>/dev/null || true
+  rm -f "$(_ws_file "$name")"
+  rm -f "$(_nvim_session_file "$name")"
+  echo "Workspace removed: $name"
+}
+
+cmd_rename() {
+  local old="${1:-}" new="${2:-}"
+  [[ -z "$old" ]] && { echo "Usage: proj rename <old> <new>"; return 1; }
+  [[ -z "$new" ]] && { read -rp "  New name: " new; }
+  [[ -z "$new" ]] && return 1
+  if ! _ws_exists "$old"; then
+    echo "Workspace not found: $old"
+    return 1
+  fi
+  cp "$(_ws_file "$old")" "$(_ws_file "$new")"
+  _ws_update_field "$new" "name" "$new"
+  rm -f "$(_ws_file "$old")"
+  [[ -f "$(_nvim_session_file "$old")" ]] && mv "$(_nvim_session_file "$old")" "$(_nvim_session_file "$new")" || true
+  [[ -f "$(_lock_file "$old")" ]] && mv "$(_lock_file "$old")" "$(_lock_file "$new")" || true
+  echo "Renamed: $old -> $new"
+}
+
+cmd_server() {
+  local subcommand="${1:-status}" name="${2:-}"
+  case "$subcommand" in
+    restart)
+      [[ -z "$name" ]] && { echo "Usage: proj server restart <name>"; return 1; }
+      local server_cmd session server_pid
+      server_cmd="$(_lock_read "$name" server_cmd)"
+      [[ -z "$server_cmd" ]] && server_cmd="$(_ws_read "$name" dev)"
+      [[ -z "$server_cmd" ]] && { echo "No dev command for: $name"; return 1; }
+      session="$(_lock_read "$name" session)"
+      tmux has-session -t "$session" 2>/dev/null || { echo "Session not running: $name"; return 1; }
+      server_pid="$(_lock_read "$name" server_pid)"
+      _pid_alive "$server_pid" && kill "$server_pid" 2>/dev/null || true
+      tmux send-keys -t "${session}:server" "" Enter
+      tmux send-keys -t "${session}:server" "$server_cmd" Enter
+      echo "Server restarted: $server_cmd"
+      ;;
+    status) cmd_status "${name:-}" ;;
+    *)      echo "Usage: proj server <restart|status> [name]" ;;
+  esac
+}
+
+cmd_session() {
+  local subcommand="${1:-list}" name="${2:-}"
+  case "$subcommand" in
+    list)
+      echo ""
+      echo "  Neovim Sessions"
+      echo "  ---------------"
+      local found=false
+      for sf in "$SESSION_DIR"/*.vim; do
+        [[ -f "$sf" ]] || continue
+        found=true
+        local n size
+        n="$(basename "$sf" .vim)"
+        size="$(wc -c < "$sf" 2>/dev/null) bytes"
+        printf "  %-24s  %s\n" "$n" "$size"
+      done
+      $found || echo "  No sessions saved yet"
+      echo
+      ;;
+    clear)
+      [[ -z "$name" ]] && { echo "Usage: proj session clear <name>"; return 1; }
+      rm -f "$(_nvim_session_file "$name")"
+      echo "nvim session cleared: $name"
+      ;;
+    *) echo "Usage: proj session <list|clear> [name]" ;;
+  esac
+}
+
+cmd_doctor() {
+  echo ""
+  echo "  proj doctor — environment check"
+  echo ""
+  _check_tool() {
+    local tool="$1" desc="$2"
+    if command -v "$tool" &>/dev/null; then
+      printf "  ok  %-12s  %s\n" "$tool" "$(command -v "$tool")"
+    else
+      printf "  !!  %-12s  not found — %s\n" "$tool" "$desc"
+    fi
+  }
+  _check_tool tmux   "pkg install tmux"
+  _check_tool nvim   "pkg install neovim"
+  _check_tool jq     "pkg install jq"
+  _check_tool fzf    "pkg install fzf"
+  _check_tool git    "pkg install git"
+  _check_tool zsh    "pkg install zsh"
+  _check_tool eza    "pkg install eza"
+  _check_tool bat    "pkg install bat"
+  echo ""
+  printf "  PROJ_HOME:  %s\n" "$PROJ_HOME"
+  local ws_count=0
+  for f in "$WS_DIR"/*.json; do [[ -f "$f" ]] && ws_count=$((ws_count+1)) || true; done
+  printf "  Workspaces: %s\n" "$ws_count"
+  local sess_count=0
+  for f in "$SESSION_DIR"/*.vim; do [[ -f "$f" ]] && sess_count=$((sess_count+1)) || true; done
+  printf "  Sessions:   %s\n" "$sess_count"
+  printf "  Log:        %s\n" "$LOG_FILE"
+  echo ""
+}
+
+cmd_init() {
+  echo ""
+  echo "  proj init — workspace setup"
+  echo ""
+  _init_dirs
+  local scan_dir="$HOME/projects"
+  if [[ -d "$scan_dir" ]]; then
+    echo "  Scanning $scan_dir for projects..."
+    local count=0
+    for dir in "$scan_dir"/*/; do
+      [[ -d "$dir" ]] || continue
+      local n
+      n="$(basename "$dir")"
+      if ! _ws_exists "$n"; then
+        _ws_register "$n" "$(realpath "$dir")"
+        printf "  + %s\n" "$n"
+        count=$((count+1))
+      fi
+    done
+    [[ $count -eq 0 ]] && echo "  No new projects found"
+    echo ""
+    echo "  Done: $count project(s) added"
+  else
+    echo "  No ~/projects directory found."
+    echo "  Use: proj add <path>"
+  fi
+  echo ""
+}
+
+cmd_help() {
+  cat <<EOF
+
+  proj v${VERSION} — Terminal IDE workspace manager
+
+  Usage:
+    proj                      Interactive project picker
+    proj open   [name]        Open workspace
+    proj switch               Switch workspace (from inside tmux)
+    proj cd     [name]        Print workspace path (use with: cd \$(proj cd))
+    proj add    [path] [name] Register a project
+    proj list                 List all workspaces
+    proj status [name]        Runtime status
+    proj kill   [name]        Kill workspace session
+    proj delete [name]        Unregister a workspace
+    proj rename <old> <new>   Rename a workspace
+    proj server restart <name>
+    proj server status  [name]
+    proj session list
+    proj session clear  <name>
+    proj init                 Scan ~/projects and register all
+    proj doctor               Check dependencies
+    proj help                 This help
+
+EOF
+}
+
+_init_dirs
+_check_deps
+
+case "${1:-}" in
+  ""|open)         shift || true; cmd_open    "$@" ;;
+  switch)          shift;         cmd_switch  "$@" ;;
+  cd)              shift;         cmd_cd      "$@" ;;
+  add)             shift;         cmd_add     "$@" ;;
+  list)            shift;         cmd_list    "$@" ;;
+  status)          shift;         cmd_status  "$@" ;;
+  kill)            shift;         cmd_kill    "$@" ;;
+  delete|remove)   shift;         cmd_delete  "$@" ;;
+  rename)          shift;         cmd_rename  "$@" ;;
+  server)          shift;         cmd_server  "$@" ;;
+  session)         shift;         cmd_session "$@" ;;
+  init)            shift;         cmd_init    "$@" ;;
+  doctor)          shift;         cmd_doctor  "$@" ;;
+  help|--help|-h)                 cmd_help         ;;
+  _preview)        shift;         _preview_workspace "$@" ;;
+  _list_raw)                      cmd__list_raw       ;;
+  _hook_pane_died) shift;         _hook_pane_died "$@" ;;
+  *)
+    echo "Unknown command: $1"
+    cmd_help
+    exit 1
+    ;;
+esac
