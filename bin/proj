@@ -1132,6 +1132,69 @@ cmd_init() {
 # cmd_help — adaptive separator in header, otherwise fixed heredoc is fine
 # =============================================================================
 
+cmd_sync() {
+	local name="${1:-}"
+	local pulled=0 skipped=0 failed=0 clean=0
+
+	_sync_one() {
+		local n="$1"
+		local file path branch
+		file="$(_ws_file "$n")"
+		[[ -f "$file" ]] || return
+		path="$(jq -r '.path' "$file")"
+
+		if [[ ! -d "$path" ]]; then
+			echo "  !! $n — path missing, skipping"
+			failed=$((failed + 1))
+			return
+		fi
+
+		if ! git -C "$path" rev-parse --git-dir &>/dev/null; then
+			echo "  -- $n — not a git repo, skipping"
+			skipped=$((skipped + 1))
+			return
+		fi
+
+		local dirty
+		dirty="$(_git_dirty "$path")"
+		if [[ -n "$dirty" ]]; then
+			echo "  !! $n — dirty working tree, skipping"
+			skipped=$((skipped + 1))
+			return
+		fi
+
+		local result
+		result="$(git -C "$path" pull --ff-only 2>&1)"
+		if echo "$result" | grep -q "Already up to date"; then
+			echo "  ok $n — up to date"
+			clean=$((clean + 1))
+		elif echo "$result" | grep -q "error\|fatal"; then
+			echo "  !! $n — pull failed"
+			_error "proj sync failed for $n: $result"
+			failed=$((failed + 1))
+		else
+			branch="$(_git_branch "$path")"
+			_ws_update_field "$n" "branch" "$branch"
+			echo "  >> $n — pulled"
+			pulled=$((pulled + 1))
+		fi
+	}
+
+	printf "\n  proj sync\n\n"
+
+	if [[ -n "$name" ]]; then
+		_sync_one "$name"
+	else
+		for f in "$WS_DIR"/*.json; do
+			[[ -f "$f" ]] || continue
+			_sync_one "$(basename "$f" .json)"
+		done
+	fi
+
+	printf "\n  pulled: %d  clean: %d  skipped: %d  failed: %d\n\n" \
+		"$pulled" "$clean" "$skipped" "$failed"
+}
+
 cmd_log() {
 	local lines="${1:-50}"
 	if [[ ! -f "$LOG_FILE" ]]; then
@@ -1184,6 +1247,7 @@ cmd_help() {
     proj update [name]        Refresh branch and type metadata
     proj log [n] [follow|-f]  View last n log lines (default 50), or follow
     proj log [n] grep <term>  Grep log for term
+    proj sync   [name]        Pull latest for all workspaces (skips dirty)
     proj doctor               Check dependencies
     proj help                 This help
 
@@ -1267,6 +1331,10 @@ update)
 log)
 	shift
 	cmd_log "$@"
+	;;
+sync)
+	shift
+	cmd_sync "$@"
 	;;
 *)
 	echo "Unknown command: $1"
