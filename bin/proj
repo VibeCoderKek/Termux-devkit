@@ -56,16 +56,91 @@ declare -A TYPE_DEV_CMDS=(
   [generic]=""
 )
 
+# =============================================================================
+# Adaptive rendering primitives
+# =============================================================================
+
+# _cols — single source of truth for terminal width.
+# Honours FORCED_COLS for testing, then tput, then 80 as a safe fallback.
+_cols() {
+  echo "${FORCED_COLS:-$(tput cols 2>/dev/null || echo 80)}"
+}
+
+# _trim STR MAX_WIDTH
+# Truncate STR to MAX_WIDTH visible characters, appending ">" when truncated.
+# Uses only ASCII so byte-counting bash (${#}) stays correct.
+# MAX_WIDTH < 1 prints nothing; MAX_WIDTH == 1 prints one char with no indicator.
+_trim() {
+  local s="$1"
+  local w="$2"
+  ((w < 1)) && return
+  if ((${#s} > w)); then
+    if ((w == 1)); then
+      printf "%s" "${s:0:1}"
+    else
+      printf "%s>" "${s:0:w-1}"
+    fi
+  else
+    printf "%s" "$s"
+  fi
+}
+
+# _separator [COLS]
+# Print a full-width horizontal rule using current terminal width.
+_separator() {
+  local cols="${1:-$(_cols)}"
+  printf "  %s\n" "$(printf '%*s' $((cols - 2)) '' | tr ' ' '-')"
+}
+
+# _fmt_kv LABEL VALUE [LABEL_WIDTH] [AVAILABLE_WIDTH]
+# Adaptive key/value row. Label column width scales with available space.
+# At very narrow widths, drops to label-only or stacked layout.
+#
+# Layout tiers:
+#   < 40  : value omitted entirely, just print label
+#   40-54 : LABEL: VALUE  (no padding, natural wrap)
+#   55+   : printf "  %-{LABEL_WIDTH}s  %s\n"  (aligned, truncated)
+_fmt_kv() {
+  local label="$1"
+  local value="$2"
+  local label_w="${3:-12}"
+  local avail="${4:-$(_cols)}"
+
+  if ((avail < 40)); then
+    printf "  %s\n" "$(_trim "$label" $((avail - 2)))"
+  elif ((avail < 55)); then
+    # compact: "  label: value"
+    # budget: 2(indent) + len(label) + 2(": ") + value <= avail
+    local fixed=$((2 + ${#label} + 2))
+    local value_w=$((avail - fixed))
+    ((value_w < 1)) && value_w=1
+    printf "  %s: %s\n" "$label" "$(_trim "$value" "$value_w")"
+  else
+    # aligned: "  %-lw  value"
+    # budget: 2(indent) + label_w + 2(gap) + value_w <= avail
+    local value_w=$((avail - 2 - label_w - 2))
+    ((value_w < 1)) && value_w=1
+    printf "  %-${label_w}s  %s\n" \
+      "$(_trim "$label" "$label_w")" \
+      "$(_trim "$value" "$value_w")"
+  fi
+}
+
+# =============================================================================
+# Internals
+# =============================================================================
+
 _init_dirs() {
   mkdir -p "$WS_DIR" "$RUN_DIR" "$SESSION_DIR" "$LAYOUT_DIR" "$LOG_DIR"
 }
 
 _log() {
-  local level="$1"; shift
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $*" >> "$LOG_FILE"
+  local level="$1"
+  shift
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $*" >>"$LOG_FILE"
 }
-_info()  { _log INFO  "$*"; }
-_warn()  { _log WARN  "$*"; }
+_info() { _log INFO "$*"; }
+_warn() { _log WARN "$*"; }
 _error() { _log ERROR "$*"; }
 
 _require() {
@@ -86,14 +161,14 @@ _check_deps() {
 
 _detect_type() {
   local path="$1"
-  [[ -f "$path/package.json" ]]     && echo "node"   && return
-  [[ -f "$path/pyproject.toml" ]]   && echo "python" && return
-  [[ -f "$path/setup.py" ]]         && echo "python" && return
+  [[ -f "$path/package.json" ]] && echo "node" && return
+  [[ -f "$path/pyproject.toml" ]] && echo "python" && return
+  [[ -f "$path/setup.py" ]] && echo "python" && return
   [[ -f "$path/requirements.txt" ]] && echo "python" && return
-  [[ -f "$path/Cargo.toml" ]]       && echo "rust"   && return
-  [[ -f "$path/go.mod" ]]           && echo "go"     && return
-  [[ -f "$path/index.html" ]]       && echo "web"    && return
-  [[ -f "$path/init.lua" ]]         && echo "lua"    && return
+  [[ -f "$path/Cargo.toml" ]] && echo "rust" && return
+  [[ -f "$path/go.mod" ]] && echo "go" && return
+  [[ -f "$path/index.html" ]] && echo "web" && return
+  [[ -f "$path/init.lua" ]] && echo "lua" && return
   local py_count
   py_count=$(find "$path" -maxdepth 2 -name "*.py" 2>/dev/null | wc -l)
   [[ $py_count -gt 2 ]] && echo "python" && return
@@ -103,45 +178,40 @@ _detect_type() {
 _detect_dev_cmd() {
   local path="$1" type="$2"
   case "$type" in
-    node)
-      local scripts
-      scripts=$(jq -r '.scripts // {} | keys[]' "$path/package.json" 2>/dev/null || true)
-      for candidate in dev start serve watch; do
-        if echo "$scripts" | grep -q "^${candidate}$"; then
-          echo "npm run $candidate"
-          return
-        fi
-      done
-      echo "npm install && npm run dev"
-      ;;
-    python)
-      [[ -f "$path/manage.py" ]] && echo "python manage.py runserver" && return
-      [[ -f "$path/app.py" ]]    && echo "python app.py"              && return
-      [[ -f "$path/main.py" ]]   && echo "python main.py"             && return
-      echo ""
-      ;;
-    rust) echo "cargo run" ;;
-    go)   echo "go run ."  ;;
-    *)    echo ""          ;;
+  node)
+    local scripts
+    scripts=$(jq -r '.scripts // {} | keys[]' "$path/package.json" 2>/dev/null || true)
+    for candidate in dev start serve watch; do
+      if echo "$scripts" | grep -q "^${candidate}$"; then
+        echo "npm run $candidate"
+        return
+      fi
+    done
+    echo "npm install && npm run dev"
+    ;;
+  python)
+    [[ -f "$path/manage.py" ]] && echo "python manage.py runserver" && return
+    [[ -f "$path/app.py" ]] && echo "python app.py" && return
+    [[ -f "$path/main.py" ]] && echo "python main.py" && return
+    echo ""
+    ;;
+  rust) echo "cargo run" ;;
+  go) echo "go run ." ;;
+  *) echo "" ;;
   esac
 }
 
 _git_branch() {
   local path="$1"
-  git -C "$path" symbolic-ref --short HEAD 2>/dev/null \
-    || git -C "$path" rev-parse --short HEAD 2>/dev/null \
-    || echo ""
+  git -C "$path" symbolic-ref --short HEAD 2>/dev/null ||
+    git -C "$path" rev-parse --short HEAD 2>/dev/null ||
+    echo ""
 }
 
-_git_dirty() {
-  local path="$1"
-  git -C "$path" diff --quiet 2>/dev/null && echo "" || echo "*"
-}
-
-_ws_file()   { echo "$WS_DIR/$1.json"; }
+_ws_file() { echo "$WS_DIR/$1.json"; }
 _lock_file() { echo "$RUN_DIR/$1.lock"; }
 
-_ws_exists()   { [[ -f "$(_ws_file   "$1")" ]]; }
+_ws_exists() { [[ -f "$(_ws_file "$1")" ]]; }
 _lock_exists() { [[ -f "$(_lock_file "$1")" ]]; }
 
 _ws_read() {
@@ -154,7 +224,7 @@ _ws_update_field() {
   local file tmp
   file="$(_ws_file "$name")"
   tmp=$(jq --arg v "$value" ".$field = \$v" "$file")
-  echo "$tmp" > "$file"
+  echo "$tmp" >"$file"
 }
 
 _ws_touch() {
@@ -166,7 +236,7 @@ _ws_register() {
   local file
   file="$(_ws_file "$name")"
   [[ -z "$type" ]] && type="$(_detect_type "$path")"
-  [[ -z "$dev"  ]] && dev="$(_detect_dev_cmd "$path" "$type")"
+  [[ -z "$dev" ]] && dev="$(_detect_dev_cmd "$path" "$type")"
   local now branch
   now="$(date -Iseconds)"
   branch="$(_git_branch "$path")"
@@ -174,25 +244,25 @@ _ws_register() {
     local created_at
     created_at="$(jq -r '.created_at // empty' "$file")"
     jq -n \
-      --arg name    "$name"  \
-      --arg path    "$path"  \
-      --arg type    "$type"  \
-      --arg dev     "$dev"   \
-      --arg branch  "$branch" \
-      --arg last    "$now"   \
+      --arg name "$name" \
+      --arg path "$path" \
+      --arg type "$type" \
+      --arg dev "$dev" \
+      --arg branch "$branch" \
+      --arg last "$now" \
       --arg created "${created_at:-$now}" \
       '{name:$name,path:$path,type:$type,dev:$dev,branch:$branch,last_opened:$last,created_at:$created}' \
-      > "$file"
+      >"$file"
   else
     jq -n \
-      --arg name   "$name" \
-      --arg path   "$path" \
-      --arg type   "$type" \
-      --arg dev    "$dev"  \
+      --arg name "$name" \
+      --arg path "$path" \
+      --arg type "$type" \
+      --arg dev "$dev" \
       --arg branch "$branch" \
-      --arg now    "$now"  \
+      --arg now "$now" \
       '{name:$name,path:$path,type:$type,dev:$dev,branch:$branch,last_opened:$now,created_at:$now}' \
-      > "$file"
+      >"$file"
   fi
   _info "Registered workspace: name=$name path=$path type=$type"
 }
@@ -207,13 +277,13 @@ _lock_read() {
 _lock_write() {
   local name="$1" session="$2" nvim_pid="$3" server_pid="${4:-}" server_cmd="${5:-}"
   jq -n \
-    --arg session    "$session"    \
-    --arg nvim_pid   "$nvim_pid"   \
+    --arg session "$session" \
+    --arg nvim_pid "$nvim_pid" \
     --arg server_pid "$server_pid" \
     --arg server_cmd "$server_cmd" \
-    --arg locked_at  "$(date -Iseconds)" \
+    --arg locked_at "$(date -Iseconds)" \
     '{session:$session,nvim_pid:$nvim_pid,server_pid:$server_pid,server_cmd:$server_cmd,locked_at:$locked_at}' \
-    > "$(_lock_file "$name")"
+    >"$(_lock_file "$name")"
 }
 
 _lock_remove() { rm -f "$(_lock_file "$1")"; }
@@ -252,11 +322,16 @@ _relative_time() {
   then=$(date -d "$ts" +%s 2>/dev/null || echo 0)
   now=$(date +%s)
   diff=$((now - then))
-  if   [[ $diff -lt 60    ]]; then echo "just now"
-  elif [[ $diff -lt 3600  ]]; then echo "$((diff/60))m ago"
-  elif [[ $diff -lt 86400 ]]; then echo "$((diff/3600))h ago"
-  elif [[ $diff -lt 604800 ]]; then echo "$((diff/86400))d ago"
-  else echo "$((diff/604800))w ago"
+  if [[ $diff -lt 60 ]]; then
+    echo "just now"
+  elif [[ $diff -lt 3600 ]]; then
+    echo "$((diff / 60))m ago"
+  elif [[ $diff -lt 86400 ]]; then
+    echo "$((diff / 3600))h ago"
+  elif [[ $diff -lt 604800 ]]; then
+    echo "$((diff / 86400))d ago"
+  else
+    echo "$((diff / 604800))w ago"
   fi
 }
 
@@ -264,7 +339,7 @@ _ensure_layout() {
   local type="$1"
   local lf="$LAYOUT_DIR/${type}.conf"
   [[ -f "$lf" ]] && return 0
-  echo "# Layout for type: $type" > "$lf"
+  echo "# Layout for type: $type" >"$lf"
 }
 
 _tmux_create_session() {
@@ -340,8 +415,8 @@ _pick_workspace() {
       last="$(jq -r '.last_opened // ""' "$f")"
       rel_time="$(_relative_time "$last")"
       printf "%s\t%s\t%s\t%s\n" "$n" "$type" "${branch:-—}" "$rel_time"
-    done \
-    | fzf \
+    done |
+      fzf \
         --delimiter='\t' \
         --with-nth=1,2,3,4 \
         --prompt="  $prompt" \
@@ -349,91 +424,500 @@ _pick_workspace() {
         --border=rounded \
         --header="  NAME             TYPE       BRANCH    LAST OPENED" \
         --preview="proj _preview {1}" \
-        --preview-window="right:40%:wrap" \
-    | awk -F'\t' '{print $1}'
+        --preview-window="right:40%:wrap" |
+      awk -F'\t' '{print $1}'
   ) || return 1
 
   echo "$selected_name"
 }
 
+# =============================================================================
+# _preview_workspace — adaptive key/value layout
+# =============================================================================
+# Uses _fmt_kv so label alignment scales with terminal width.
+# At narrow widths (< 55 cols) drops to "Label: value" compact form.
+# At very narrow (< 40 cols) shows only labels.
+# Git log section: shown at >= 50 cols; commit hashes dropped at < 60 cols.
 _preview_workspace() {
   local name="$1"
   local file
   file="$(_ws_file "$name")"
-  [[ -f "$file" ]] || { echo "Workspace not found: $name"; return; }
+  [[ -f "$file" ]] || {
+    echo "Workspace not found: $name"
+    return
+  }
+
+  local cols
+  cols="$(_cols)"
+
   local path type dev branch last_opened
   path="$(jq -r '.path' "$file")"
   type="$(jq -r '.type' "$file")"
-  dev="$(jq -r  '.dev // ""' "$file")"
+  dev="$(jq -r '.dev // ""' "$file")"
   branch="$(_git_branch "$path" 2>/dev/null || echo "—")"
   last_opened="$(jq -r '.last_opened // ""' "$file")"
   local rel_time
   rel_time="$(_relative_time "$last_opened")"
+
   local status_line="idle"
   if _lock_exists "$name"; then
     local session
     session="$(_lock_read "$name" session)"
     tmux has-session -t "$session" 2>/dev/null && status_line="live (session: $session)" || true
   fi
+
   local has_session="no"
   [[ -f "$(_nvim_session_file "$name")" ]] && has_session="yes (will restore)"
-  local git_log
-  git_log=$(git -C "$path" log --oneline -5 2>/dev/null || echo "  (not a git repo)")
-  printf "  %s\n" "$name"
-  printf "  -----------------------------------\n"
-  printf "  %-14s  %s\n" "Type"         "$type"
-  printf "  %-14s  %s\n" "Path"         "$path"
-  printf "  %-14s  %s\n" "Branch"       "$branch"
-  printf "  %-14s  %s\n" "Dev command"  "${dev:-—}"
-  printf "  %-14s  %s\n" "Last opened"  "$rel_time"
-  printf "  %-14s  %s\n" "Status"       "$status_line"
-  printf "  %-14s  %s\n" "nvim session" "$has_session"
-  printf "\n  Recent commits:\n"
-  echo "$git_log" | while IFS= read -r line; do
-    printf "  %s\n" "$line"
-  done
+
+  # Label column width: 10 at narrow, 14 at standard, 16 at wide
+  local lw=14
+  ((cols < 55)) && lw=10
+  ((cols >= 100)) && lw=16
+
+  printf "\n"
+  printf "  %s\n" "$(_trim "$name" $((cols - 2)))"
+
+  if ((cols >= 30)); then
+    _separator "$cols"
+  fi
+
+  _fmt_kv "Type" "$type" "$lw" "$cols"
+  _fmt_kv "Path" "$path" "$lw" "$cols"
+
+  if ((cols >= 50)); then
+    _fmt_kv "Branch" "$branch" "$lw" "$cols"
+    _fmt_kv "Dev command" "${dev:-—}" "$lw" "$cols"
+    _fmt_kv "Last opened" "$rel_time" "$lw" "$cols"
+    _fmt_kv "Status" "$status_line" "$lw" "$cols"
+    _fmt_kv "nvim session" "$has_session" "$lw" "$cols"
+  fi
+
+  if ((cols >= 50)); then
+    printf "\n"
+    printf "  Recent commits:\n"
+    local git_log
+    git_log=$(git -C "$path" log --oneline -5 2>/dev/null || echo "  (not a git repo)")
+    # At < 60 cols strip the hash prefix (7 chars + space) to save room
+    local commit_w=$((cols - 4))
+    local hash_re='^[0-9a-f]{7} '
+    echo "$git_log" | while IFS= read -r line; do
+      if ((cols < 60)) && [[ "$line" =~ $hash_re ]]; then
+        line="${line:8}"
+      fi
+      printf "  %s\n" "$(_trim "$line" "$commit_w")"
+    done
+  fi
 }
 
-_open_workspace() {
-  local name="$1"
+# =============================================================================
+# cmd_list — adaptive table (retains existing logic, uses shared _trim/_cols)
+# =============================================================================
+cmd_list() {
+  local found=false
+  local cols
+  cols="$(_cols)"
+
+  local show_branch=false
+  local show_status=false
+  local show_time=false
+  local show_type=false
+
+  ((cols >= 50)) && show_branch=true
+  ((cols >= 70)) && show_status=true
+  ((cols >= 90)) && show_time=true
+  ((cols >= 110)) && show_type=true
+
+  printf "\n"
+
+  if ! $show_branch; then
+    printf "  %-20s\n" "NAME"
+  else
+    printf "  %-20s  %-20s" "NAME" "BRANCH"
+    $show_type && printf "  %-8s" "TYPE"
+    $show_time && printf "  %-10s" "LAST OPENED"
+    $show_status && printf "  %-6s" "STATUS"
+    printf "\n"
+  fi
+
+  _separator "$cols"
+
+  for f in "$WS_DIR"/*.json; do
+    [[ -f "$f" ]] || continue
+    found=true
+
+    local name type branch last path rel_time live_str
+
+    name="$(jq -r '.name // ""' "$f")"
+    type="$(jq -r '.type // "generic"' "$f")"
+    path="$(jq -r '.path // ""' "$f")"
+
+    branch="$(jq -r '.branch // ""' "$f")"
+    branch="${branch:-—}"
+
+    last="$(jq -r '.last_opened // ""' "$f")"
+    rel_time="$(_relative_time "$last")"
+
+    live_str="idle"
+    if _lock_exists "$name"; then
+      local session
+      session="$(_lock_read "$name" session)"
+      tmux has-session -t "$session" 2>/dev/null && live_str="live" || true
+    fi
+
+    if ! $show_branch; then
+      printf "  %-20s\n" "$(_trim "$name" 20)"
+      continue
+    fi
+
+    printf "  %-20s  %-20s" \
+      "$(_trim "$name" 20)" \
+      "$(_trim "$branch" 20)"
+
+    $show_type && printf "  %-8s" "$(_trim "$type" 8)"
+    $show_time && printf "  %-10s" "$(_trim "$rel_time" 10)"
+    $show_status && printf "  %-6s" "$live_str"
+
+    printf "\n"
+  done
+
+  if ! $found; then
+    echo "  No workspaces registered."
+  fi
+
+  printf "\n"
+}
+
+cmd__list_raw() {
+  for f in "$WS_DIR"/*.json; do
+    [[ -f "$f" ]] && basename "$f" .json
+  done | sort
+}
+
+# =============================================================================
+# cmd_status — adaptive key/value + session detail
+# =============================================================================
+# Priority tiers:
+#   < 40  : name only
+#   40-59 : name + status word
+#   60+   : full key/value block
+#   80+   : include session detail (pid, locked_at)
+cmd_status() {
+  local name="${1:-}"
+  _cleanup_locks
+
+  local cols
+  cols="$(_cols)"
+
+  # Label width for kv rows
+  local lw=12
+  ((cols >= 80)) && lw=14
+
+  _status_one() {
+    local n="$1"
+    local file
+    file="$(_ws_file "$n")"
+    [[ -f "$file" ]] || return
+
+    local type
+    type="$(jq -r '.type' "$file")"
+    local type_label="${TYPE_LABELS[$type]:-$type}"
+
+    printf "\n"
+
+    if ((cols < 40)); then
+      printf "  %s\n" "$(_trim "$n" $((cols - 2)))"
+      return
+    fi
+
+    if ((cols < 60)); then
+      # Compact: name [type] — status
+      local status_word="idle"
+      if _lock_exists "$n"; then
+        local sess
+        sess="$(_lock_read "$n" session)"
+        tmux has-session -t "$sess" 2>/dev/null && status_word="live" || status_word="dead"
+      fi
+      printf "  %s [%s] — %s\n" \
+        "$(_trim "$n" $((cols - 16)))" \
+        "$(_trim "$type_label" 7)" \
+        "$status_word"
+      return
+    fi
+
+    # Full layout
+    printf "  %s  [%s]\n" "$(_trim "$n" $((cols - 14)))" "$type_label"
+    _separator "$cols"
+
+    if _lock_exists "$n"; then
+      local session nvim_pid server_pid locked_at server_cmd
+      session="$(_lock_read "$n" session)"
+      nvim_pid="$(_lock_read "$n" nvim_pid)"
+      server_pid="$(_lock_read "$n" server_pid)"
+      locked_at="$(_lock_read "$n" locked_at)"
+      server_cmd="$(_lock_read "$n" server_cmd)"
+
+      local sess_status
+      if tmux has-session -t "$session" 2>/dev/null; then
+        sess_status="live"
+      else
+        sess_status="dead"
+      fi
+
+      _fmt_kv "Session" "$session ($sess_status)" "$lw" "$cols"
+
+      if ((cols >= 80)); then
+        _fmt_kv "Since" "$(_relative_time "$locked_at")" "$lw" "$cols"
+        _pid_alive "$nvim_pid" && _fmt_kv "nvim PID" "$nvim_pid" "$lw" "$cols" || true
+        _pid_alive "$server_pid" && _fmt_kv "server PID" "$server_pid" "$lw" "$cols" || true
+        [[ -n "$server_cmd" ]] && _fmt_kv "server cmd" "$server_cmd" "$lw" "$cols" || true
+      fi
+    else
+      _fmt_kv "Status" "idle" "$lw" "$cols"
+    fi
+
+    [[ -f "$(_nvim_session_file "$n")" ]] && _fmt_kv "nvim session" "saved" "$lw" "$cols" || true
+  }
+
+  if [[ -n "$name" ]]; then
+    _status_one "$name"
+  else
+    for f in "$WS_DIR"/*.json; do
+      [[ -f "$f" ]] || continue
+      _status_one "$(basename "$f" .json)"
+    done
+  fi
+
+  printf "\n"
+}
+
+cmd_kill() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && { name="$(_pick_workspace "Kill session: ")" || return 1; }
+  if _lock_exists "$name"; then
+    local session server_pid
+    session="$(_lock_read "$name" session)"
+    server_pid="$(_lock_read "$name" server_pid)"
+    _pid_alive "$server_pid" && kill "$server_pid" 2>/dev/null && echo "Server stopped" || true
+    if tmux has-session -t "$session" 2>/dev/null; then
+      tmux kill-session -t "$session"
+      echo "Session killed: $session"
+    fi
+    _lock_remove "$name"
+  else
+    echo "Session not running: $name"
+  fi
+}
+
+cmd_delete() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && { name="$(_pick_workspace "Delete workspace: ")" || return 1; }
   if ! _ws_exists "$name"; then
-    echo "Unknown workspace: $name"
-    echo "Register it with: proj add <path>"
+    echo "Workspace not found: $name"
     return 1
   fi
-  local path type dev_cmd
-  path="$(_ws_read "$name" path)"
-  type="$(_ws_read "$name" type)"
-  dev_cmd="$(_ws_read "$name" dev)"
-  if [[ ! -d "$path" ]]; then
-    echo "Project directory not found: $path"
-    return 1
-  fi
-  local branch
-  branch="$(_git_branch "$path")" || branch=""
-  _ws_update_field "$name" "branch" "$branch"
-  _ws_touch "$name"
-  local session
-  session="proj-$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-*$//')"
-  if tmux has-session -t "$session" 2>/dev/null; then
-    _info "Attaching to existing session: $session"
-    echo "Resuming: $name"
-    tmux attach-session -t "$session"
+  read -rp "  Delete workspace '$name'? This won't touch your files. [y/N] " confirm
+  [[ "$confirm" =~ ^[Yy]$ ]] || {
+    echo "Cancelled."
     return 0
+  }
+  cmd_kill "$name" 2>/dev/null || true
+  rm -f "$(_ws_file "$name")"
+  rm -f "$(_nvim_session_file "$name")"
+  echo "Workspace removed: $name"
+}
+
+cmd_rename() {
+  local old="${1:-}" new="${2:-}"
+  [[ -z "$old" ]] && {
+    echo "Usage: proj rename <old> <new>"
+    return 1
+  }
+  [[ -z "$new" ]] && { read -rp "  New name: " new; }
+  [[ -z "$new" ]] && return 1
+  if ! _ws_exists "$old"; then
+    echo "Workspace not found: $old"
+    return 1
   fi
-  echo "Opening: $name  [${TYPE_LABELS[$type]:-$type}]"
-  _info "Opening workspace: name=$name session=$session path=$path"
-  _ensure_layout "$type"
-  _tmux_create_session "$session" "$path" "$type" "$dev_cmd" "$name"
-  _tmux_launch_nvim "$session" "$name"
-  sleep 0.3
-  if [[ -n "$dev_cmd" ]]; then
-    _tmux_launch_server "$session" "$dev_cmd"
-  fi
-  _lock_write "$name" "$session" "" "" "$dev_cmd"
-  tmux select-window -t "${session}:nvim" 2>/dev/null || true
-  _info "Attaching to session: $session"
-  tmux attach-session -t "$session"
+  cp "$(_ws_file "$old")" "$(_ws_file "$new")"
+  _ws_update_field "$new" "name" "$new"
+  rm -f "$(_ws_file "$old")"
+  [[ -f "$(_nvim_session_file "$old")" ]] && mv "$(_nvim_session_file "$old")" "$(_nvim_session_file "$new")" || true
+  [[ -f "$(_lock_file "$old")" ]] && mv "$(_lock_file "$old")" "$(_lock_file "$new")" || true
+  echo "Renamed: $old -> $new"
+}
+
+cmd_server() {
+  local subcommand="${1:-status}" name="${2:-}"
+  case "$subcommand" in
+  restart)
+    [[ -z "$name" ]] && {
+      echo "Usage: proj server restart <name>"
+      return 1
+    }
+    local server_cmd session server_pid
+    server_cmd="$(_lock_read "$name" server_cmd)"
+    [[ -z "$server_cmd" ]] && server_cmd="$(_ws_read "$name" dev)"
+    [[ -z "$server_cmd" ]] && {
+      echo "No dev command for: $name"
+      return 1
+    }
+    session="$(_lock_read "$name" session)"
+    tmux has-session -t "$session" 2>/dev/null || {
+      echo "Session not running: $name"
+      return 1
+    }
+    server_pid="$(_lock_read "$name" server_pid)"
+    _pid_alive "$server_pid" && kill "$server_pid" 2>/dev/null || true
+    tmux send-keys -t "${session}:server" "" Enter
+    tmux send-keys -t "${session}:server" "$server_cmd" Enter
+    echo "Server restarted: $server_cmd"
+    ;;
+  status) cmd_status "${name:-}" ;;
+  *) echo "Usage: proj server <restart|status> [name]" ;;
+  esac
+}
+
+# =============================================================================
+# cmd_session — adaptive table
+# =============================================================================
+# Priority:
+#   < 40  : name only, no size
+#   40-59 : name + truncated size
+#   60+   : name left-padded, size right-aligned
+cmd_session() {
+  local subcommand="${1:-list}" name="${2:-}"
+  case "$subcommand" in
+  list)
+    local cols
+    cols="$(_cols)"
+
+    printf "\n"
+    printf "  Neovim Sessions\n"
+    _separator "$cols"
+
+    local found=false
+    for sf in "$SESSION_DIR"/*.vim; do
+      [[ -f "$sf" ]] || continue
+      found=true
+
+      local n size_bytes size_str
+      n="$(basename "$sf" .vim)"
+      size_bytes="$(wc -c <"$sf" 2>/dev/null)"
+      size_str="${size_bytes} bytes"
+
+      if ((cols < 40)); then
+        printf "  %s\n" "$(_trim "$n" $((cols - 2)))"
+      elif ((cols < 60)); then
+        local name_w=$((cols - 2 - ${#size_str} - 2))
+        ((name_w < 4)) && name_w=4
+        printf "  %-${name_w}s  %s\n" "$(_trim "$n" "$name_w")" "$size_str"
+      else
+        # Name gets most of the space; size is fixed-width right side
+        local name_w=$((cols - 2 - 12))
+        ((name_w < 4)) && name_w=4
+        printf "  %-${name_w}s  %12s\n" "$(_trim "$n" "$name_w")" "$size_str"
+      fi
+    done
+
+    $found || printf "  No sessions saved yet\n"
+    printf "\n"
+    ;;
+  clear)
+    [[ -z "$name" ]] && {
+      echo "Usage: proj session clear <name>"
+      return 1
+    }
+    rm -f "$(_nvim_session_file "$name")"
+    echo "nvim session cleared: $name"
+    ;;
+  *) echo "Usage: proj session <list|clear> [name]" ;;
+  esac
+}
+
+# =============================================================================
+# cmd_doctor — adaptive dependency table
+# =============================================================================
+# Priority columns: STATUS  TOOL  PATH/NOTE
+#   < 40  : status icon + tool name only
+#   40-59 : status icon + tool name + short note (no path)
+#   60-79 : status icon + tool name (fixed 12) + full path/note
+#   80+   : status icon + tool name (fixed 14) + full path/note, aligned
+cmd_doctor() {
+  local cols
+  cols="$(_cols)"
+
+  printf "\n"
+  printf "  proj doctor — environment check\n"
+  printf "\n"
+
+  _check_tool() {
+    local tool="$1" desc="$2"
+
+    if command -v "$tool" &>/dev/null; then
+      local tool_path
+      tool_path="$(command -v "$tool")"
+
+      if ((cols < 40)); then
+        printf "  ok  %s\n" "$(_trim "$tool" $((cols - 6)))"
+      elif ((cols < 60)); then
+        printf "  ok  %-10s\n" "$(_trim "$tool" 10)"
+      elif ((cols < 80)); then
+        local path_w=$((cols - 18))
+        printf "  ok  %-12s  %s\n" \
+          "$(_trim "$tool" 12)" \
+          "$(_trim "$tool_path" "$path_w")"
+      else
+        local path_w=$((cols - 20))
+        printf "  ok  %-14s  %s\n" \
+          "$(_trim "$tool" 14)" \
+          "$(_trim "$tool_path" "$path_w")"
+      fi
+    else
+      if ((cols < 40)); then
+        printf "  !!  %s\n" "$(_trim "$tool" $((cols - 6)))"
+      elif ((cols < 60)); then
+        printf "  !!  %-10s  not found\n" "$(_trim "$tool" 10)"
+      elif ((cols < 80)); then
+        local note_w=$((cols - 30))
+        printf "  !!  %-12s  not found — %s\n" \
+          "$(_trim "$tool" 12)" \
+          "$(_trim "$desc" "$note_w")"
+      else
+        local note_w=$((cols - 32))
+        printf "  !!  %-14s  not found — %s\n" \
+          "$(_trim "$tool" 14)" \
+          "$(_trim "$desc" "$note_w")"
+      fi
+    fi
+  }
+
+  _check_tool tmux "pkg install tmux"
+  _check_tool nvim "pkg install neovim"
+  _check_tool jq "pkg install jq"
+  _check_tool fzf "pkg install fzf"
+  _check_tool git "pkg install git"
+  _check_tool zsh "pkg install zsh"
+  _check_tool eza "pkg install eza"
+  _check_tool bat "pkg install bat"
+
+  printf "\n"
+
+  # Summary block — also adaptive
+  local lw=12
+  ((cols >= 80)) && lw=14
+
+  _fmt_kv "PROJ_HOME" "$PROJ_HOME" "$lw" "$cols"
+
+  local ws_count=0
+  for f in "$WS_DIR"/*.json; do [[ -f "$f" ]] && ws_count=$((ws_count + 1)) || true; done
+  _fmt_kv "Workspaces" "$ws_count" "$lw" "$cols"
+
+  local sess_count=0
+  for f in "$SESSION_DIR"/*.vim; do [[ -f "$f" ]] && sess_count=$((sess_count + 1)) || true; done
+  _fmt_kv "Sessions" "$sess_count" "$lw" "$cols"
+  _fmt_kv "Log" "$LOG_FILE" "$lw" "$cols"
+
+  printf "\n"
 }
 
 cmd_add() {
@@ -484,221 +968,63 @@ cmd_cd() {
   echo "$path"
 }
 
-cmd_list() {
-  local found=false
-  printf "\n  %-20s  %-10s  %-16s  %-12s  %s\n" "NAME" "TYPE" "BRANCH" "LAST OPENED" "STATUS"
-  printf "  %s\n" "----------------------------------------------------------------"
-  for f in "$WS_DIR"/*.json; do
-    [[ -f "$f" ]] || continue
-    found=true
-    local name type branch last path rel_time live_str
-    name="$(jq -r '.name // ""' "$f")"
-    type="$(jq -r '.type // "generic"' "$f")"
-    path="$(jq -r '.path // ""' "$f")"
-    branch="$(jq -r '.branch // ""' "$f")"
-    last="$(jq -r '.last_opened // ""' "$f")"
-    rel_time="$(_relative_time "$last")"
-    live_str="idle"
-    if _lock_exists "$name"; then
-      local session
-      session="$(_lock_read "$name" session)"
-      tmux has-session -t "$session" 2>/dev/null && live_str="live" || true
-    fi
-    printf "  %-20s  %-10s  %-16s  %-12s  %s\n" \
-      "$name" "$type" "${branch:-—}" "$rel_time" "$live_str"
-  done
-  if ! $found; then
-    echo "  No workspaces registered."
-  fi
-  printf "\n"
-}
-
-cmd__list_raw() {
-  for f in "$WS_DIR"/*.json; do
-    [[ -f "$f" ]] && basename "$f" .json
-  done | sort
-}
-
-cmd_status() {
-  local name="${1:-}"
-  _cleanup_locks
-  _status_one() {
-    local n="$1"
-    local file
-    file="$(_ws_file "$n")"
-    [[ -f "$file" ]] || return
-    local type
-    type="$(jq -r '.type' "$file")"
-    printf "\n  %s  [%s]\n" "$n" "${TYPE_LABELS[$type]:-$type}"
-    if _lock_exists "$n"; then
-      local session nvim_pid server_pid locked_at
-      session="$(_lock_read    "$n" session)"
-      nvim_pid="$(_lock_read   "$n" nvim_pid)"
-      server_pid="$(_lock_read "$n" server_pid)"
-      locked_at="$(_lock_read  "$n" locked_at)"
-      if tmux has-session -t "$session" 2>/dev/null; then
-        printf "  Session: %s  (since %s)\n" "$session" "$(_relative_time "$locked_at")"
-      else
-        printf "  Session: %s (dead)\n" "$session"
-      fi
-      _pid_alive "$nvim_pid"   && printf "  nvim PID: %s\n" "$nvim_pid"   || true
-      _pid_alive "$server_pid" && printf "  server PID: %s\n" "$server_pid" || true
-    else
-      printf "  idle\n"
-    fi
-    [[ -f "$(_nvim_session_file "$n")" ]] && printf "  nvim session file exists\n" || true
-  }
-  if [[ -n "$name" ]]; then
-    _status_one "$name"
-  else
-    for f in "$WS_DIR"/*.json; do
-      [[ -f "$f" ]] || continue
-      _status_one "$(basename "$f" .json)"
-    done
-  fi
-  printf "\n"
-}
-
-cmd_kill() {
-  local name="${1:-}"
-  [[ -z "$name" ]] && { name="$(_pick_workspace "Kill session: ")" || return 1; }
-  if _lock_exists "$name"; then
-    local session server_pid
-    session="$(_lock_read    "$name" session)"
-    server_pid="$(_lock_read "$name" server_pid)"
-    _pid_alive "$server_pid" && kill "$server_pid" 2>/dev/null && echo "Server stopped" || true
-    if tmux has-session -t "$session" 2>/dev/null; then
-      tmux kill-session -t "$session"
-      echo "Session killed: $session"
-    fi
-    _lock_remove "$name"
-  else
-    echo "Session not running: $name"
-  fi
-}
-
-cmd_delete() {
-  local name="${1:-}"
-  [[ -z "$name" ]] && { name="$(_pick_workspace "Delete workspace: ")" || return 1; }
+_open_workspace() {
+  local name="$1"
   if ! _ws_exists "$name"; then
-    echo "Workspace not found: $name"
+    echo "Unknown workspace: $name"
+    echo "Register it with: proj add <path>"
     return 1
   fi
-  read -rp "  Delete workspace '$name'? This won't touch your files. [y/N] " confirm
-  [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Cancelled."; return 0; }
-  cmd_kill "$name" 2>/dev/null || true
-  rm -f "$(_ws_file "$name")"
-  rm -f "$(_nvim_session_file "$name")"
-  echo "Workspace removed: $name"
-}
-
-cmd_rename() {
-  local old="${1:-}" new="${2:-}"
-  [[ -z "$old" ]] && { echo "Usage: proj rename <old> <new>"; return 1; }
-  [[ -z "$new" ]] && { read -rp "  New name: " new; }
-  [[ -z "$new" ]] && return 1
-  if ! _ws_exists "$old"; then
-    echo "Workspace not found: $old"
+  local path type dev_cmd
+  path="$(_ws_read "$name" path)"
+  type="$(_ws_read "$name" type)"
+  dev_cmd="$(_ws_read "$name" dev)"
+  if [[ ! -d "$path" ]]; then
+    echo "Project directory not found: $path"
     return 1
   fi
-  cp "$(_ws_file "$old")" "$(_ws_file "$new")"
-  _ws_update_field "$new" "name" "$new"
-  rm -f "$(_ws_file "$old")"
-  [[ -f "$(_nvim_session_file "$old")" ]] && mv "$(_nvim_session_file "$old")" "$(_nvim_session_file "$new")" || true
-  [[ -f "$(_lock_file "$old")" ]] && mv "$(_lock_file "$old")" "$(_lock_file "$new")" || true
-  echo "Renamed: $old -> $new"
+  local branch
+  branch="$(_git_branch "$path")" || branch=""
+  _ws_update_field "$name" "branch" "$branch"
+  _ws_touch "$name"
+  local session
+  session="proj-$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-*$//')"
+  if tmux has-session -t "$session" 2>/dev/null; then
+    _info "Attaching to existing session: $session"
+    echo "Resuming: $name"
+    tmux attach-session -t "$session"
+    return 0
+  fi
+  echo "Opening: $name  [${TYPE_LABELS[$type]:-$type}]"
+  _info "Opening workspace: name=$name session=$session path=$path"
+  _ensure_layout "$type"
+  _tmux_create_session "$session" "$path" "$type" "$dev_cmd" "$name"
+  _tmux_launch_nvim "$session" "$name"
+  sleep 0.3
+  if [[ -n "$dev_cmd" ]]; then
+    _tmux_launch_server "$session" "$dev_cmd"
+  fi
+  _lock_write "$name" "$session" "" "" "$dev_cmd"
+  tmux select-window -t "${session}:nvim" 2>/dev/null || true
+  _info "Attaching to session: $session"
+  tmux attach-session -t "$session"
 }
 
-cmd_server() {
-  local subcommand="${1:-status}" name="${2:-}"
-  case "$subcommand" in
-    restart)
-      [[ -z "$name" ]] && { echo "Usage: proj server restart <name>"; return 1; }
-      local server_cmd session server_pid
-      server_cmd="$(_lock_read "$name" server_cmd)"
-      [[ -z "$server_cmd" ]] && server_cmd="$(_ws_read "$name" dev)"
-      [[ -z "$server_cmd" ]] && { echo "No dev command for: $name"; return 1; }
-      session="$(_lock_read "$name" session)"
-      tmux has-session -t "$session" 2>/dev/null || { echo "Session not running: $name"; return 1; }
-      server_pid="$(_lock_read "$name" server_pid)"
-      _pid_alive "$server_pid" && kill "$server_pid" 2>/dev/null || true
-      tmux send-keys -t "${session}:server" "" Enter
-      tmux send-keys -t "${session}:server" "$server_cmd" Enter
-      echo "Server restarted: $server_cmd"
-      ;;
-    status) cmd_status "${name:-}" ;;
-    *)      echo "Usage: proj server <restart|status> [name]" ;;
-  esac
-}
-
-cmd_session() {
-  local subcommand="${1:-list}" name="${2:-}"
-  case "$subcommand" in
-    list)
-      echo ""
-      echo "  Neovim Sessions"
-      echo "  ---------------"
-      local found=false
-      for sf in "$SESSION_DIR"/*.vim; do
-        [[ -f "$sf" ]] || continue
-        found=true
-        local n size
-        n="$(basename "$sf" .vim)"
-        size="$(wc -c < "$sf" 2>/dev/null) bytes"
-        printf "  %-24s  %s\n" "$n" "$size"
-      done
-      $found || echo "  No sessions saved yet"
-      echo
-      ;;
-    clear)
-      [[ -z "$name" ]] && { echo "Usage: proj session clear <name>"; return 1; }
-      rm -f "$(_nvim_session_file "$name")"
-      echo "nvim session cleared: $name"
-      ;;
-    *) echo "Usage: proj session <list|clear> [name]" ;;
-  esac
-}
-
-cmd_doctor() {
-  echo ""
-  echo "  proj doctor — environment check"
-  echo ""
-  _check_tool() {
-    local tool="$1" desc="$2"
-    if command -v "$tool" &>/dev/null; then
-      printf "  ok  %-12s  %s\n" "$tool" "$(command -v "$tool")"
-    else
-      printf "  !!  %-12s  not found — %s\n" "$tool" "$desc"
-    fi
-  }
-  _check_tool tmux   "pkg install tmux"
-  _check_tool nvim   "pkg install neovim"
-  _check_tool jq     "pkg install jq"
-  _check_tool fzf    "pkg install fzf"
-  _check_tool git    "pkg install git"
-  _check_tool zsh    "pkg install zsh"
-  _check_tool eza    "pkg install eza"
-  _check_tool bat    "pkg install bat"
-  echo ""
-  printf "  PROJ_HOME:  %s\n" "$PROJ_HOME"
-  local ws_count=0
-  for f in "$WS_DIR"/*.json; do [[ -f "$f" ]] && ws_count=$((ws_count+1)) || true; done
-  printf "  Workspaces: %s\n" "$ws_count"
-  local sess_count=0
-  for f in "$SESSION_DIR"/*.vim; do [[ -f "$f" ]] && sess_count=$((sess_count+1)) || true; done
-  printf "  Sessions:   %s\n" "$sess_count"
-  printf "  Log:        %s\n" "$LOG_FILE"
-  echo ""
-}
-
+# =============================================================================
+# cmd_init — workspace scanner
+# =============================================================================
 cmd_init() {
-  echo ""
-  echo "  proj init — workspace setup"
-  echo ""
+  local cols
+  cols="$(_cols)"
+
+  printf "\n"
+  printf "  proj init — workspace setup\n"
+  printf "\n"
   _init_dirs
+
   local scan_dir="$HOME/projects"
   if [[ -d "$scan_dir" ]]; then
-    echo "  Scanning $scan_dir for projects..."
+    printf "  Scanning %s for projects...\n" "$(_trim "$scan_dir" $((cols - 14)))"
     local count=0
     for dir in "$scan_dir"/*/; do
       [[ -d "$dir" ]] || continue
@@ -706,24 +1032,31 @@ cmd_init() {
       n="$(basename "$dir")"
       if ! _ws_exists "$n"; then
         _ws_register "$n" "$(realpath "$dir")"
-        printf "  + %s\n" "$n"
-        count=$((count+1))
+        printf "  + %s\n" "$(_trim "$n" $((cols - 4)))"
+        count=$((count + 1))
       fi
     done
-    [[ $count -eq 0 ]] && echo "  No new projects found"
-    echo ""
-    echo "  Done: $count project(s) added"
+    printf "\n"
+    [[ $count -eq 0 ]] && printf "  No new projects found\n" || printf "  Done: %d project(s) added\n" "$count"
   else
-    echo "  No ~/projects directory found."
-    echo "  Use: proj add <path>"
+    printf "  No ~/projects directory found.\n"
+    printf "  Use: proj add <path>\n"
   fi
-  echo ""
+
+  printf "\n"
 }
 
+# =============================================================================
+# cmd_help — adaptive separator in header, otherwise fixed heredoc is fine
+# =============================================================================
 cmd_help() {
+  local cols
+  cols="$(_cols)"
+  printf "\n"
+  printf "  proj v%s — Terminal IDE workspace manager\n" "$VERSION"
+  printf "\n"
+  _separator "$cols"
   cat <<EOF
-
-  proj v${VERSION} — Terminal IDE workspace manager
 
   Usage:
     proj                      Interactive project picker
@@ -747,30 +1080,79 @@ cmd_help() {
 EOF
 }
 
+# =============================================================================
+# Init + dispatch
+# =============================================================================
+
 _init_dirs
 _check_deps
 
 case "${1:-}" in
-  ""|open)         shift || true; cmd_open    "$@" ;;
-  switch)          shift;         cmd_switch  "$@" ;;
-  cd)              shift;         cmd_cd      "$@" ;;
-  add)             shift;         cmd_add     "$@" ;;
-  list)            shift;         cmd_list    "$@" ;;
-  status)          shift;         cmd_status  "$@" ;;
-  kill)            shift;         cmd_kill    "$@" ;;
-  delete|remove)   shift;         cmd_delete  "$@" ;;
-  rename)          shift;         cmd_rename  "$@" ;;
-  server)          shift;         cmd_server  "$@" ;;
-  session)         shift;         cmd_session "$@" ;;
-  init)            shift;         cmd_init    "$@" ;;
-  doctor)          shift;         cmd_doctor  "$@" ;;
-  help|--help|-h)                 cmd_help         ;;
-  _preview)        shift;         _preview_workspace "$@" ;;
-  _list_raw)                      cmd__list_raw       ;;
-  _hook_pane_died) shift;         _hook_pane_died "$@" ;;
-  *)
-    echo "Unknown command: $1"
-    cmd_help
-    exit 1
-    ;;
+"" | open)
+  shift || true
+  cmd_open "$@"
+  ;;
+switch)
+  shift
+  cmd_switch "$@"
+  ;;
+cd)
+  shift
+  cmd_cd "$@"
+  ;;
+add)
+  shift
+  cmd_add "$@"
+  ;;
+list)
+  shift
+  cmd_list "$@"
+  ;;
+status)
+  shift
+  cmd_status "$@"
+  ;;
+kill)
+  shift
+  cmd_kill "$@"
+  ;;
+delete | remove)
+  shift
+  cmd_delete "$@"
+  ;;
+rename)
+  shift
+  cmd_rename "$@"
+  ;;
+server)
+  shift
+  cmd_server "$@"
+  ;;
+session)
+  shift
+  cmd_session "$@"
+  ;;
+init)
+  shift
+  cmd_init "$@"
+  ;;
+doctor)
+  shift
+  cmd_doctor "$@"
+  ;;
+help | --help | -h) cmd_help ;;
+_preview)
+  shift
+  _preview_workspace "$@"
+  ;;
+_list_raw) cmd__list_raw ;;
+_hook_pane_died)
+  shift
+  _hook_pane_died "$@"
+  ;;
+*)
+  echo "Unknown command: $1"
+  cmd_help
+  exit 1
+  ;;
 esac
