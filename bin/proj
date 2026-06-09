@@ -921,6 +921,40 @@ cmd_doctor() {
 	printf "\n"
 }
 
+cmd_update() {
+	local name="${1:-}"
+	local updated=0
+
+	_update_one() {
+		local n="$1"
+		local file path type branch
+		file="$(_ws_file "$n")"
+		[[ -f "$file" ]] || return
+		path="$(jq -r '.path' "$file")"
+		[[ -d "$path" ]] || {
+			echo "  skipped $n (path missing)"
+			return
+		}
+		type="$(_detect_type "$path")"
+		branch="$(_git_branch "$path")"
+		_ws_update_field "$n" "type" "$type"
+		_ws_update_field "$n" "branch" "$branch"
+		echo "  updated $n  [$type] ${branch:+(${branch})}"
+		updated=$((updated + 1))
+	}
+
+	if [[ -n "$name" ]]; then
+		_update_one "$name"
+	else
+		for f in "$WS_DIR"/*.json; do
+			[[ -f "$f" ]] || continue
+			_update_one "$(basename "$f" .json)"
+		done
+	fi
+
+	echo "  Done: $updated workspace(s) updated"
+}
+
 cmd_add() {
 	local path="${1:-}" name="${2:-}"
 	[[ -z "$path" ]] && path="$(pwd)"
@@ -1076,6 +1110,7 @@ cmd_help() {
     proj session list
     proj session clear  <name>
     proj init                 Scan ~/projects and register all
+		proj update [name]        Refresh branch and type metadata
     proj doctor               Check dependencies
     proj help                 This help
 
@@ -1151,6 +1186,10 @@ _list_raw) cmd__list_raw ;;
 _hook_pane_died)
 	shift
 	_hook_pane_died "$@"
+	;;
+update)
+	shift
+	cmd_update "$@"
 	;;
 *)
 	echo "Unknown command: $1"
