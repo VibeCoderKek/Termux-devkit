@@ -17,6 +17,7 @@ readonly LAYOUT_DIR="$PROJ_HOME/layouts"
 readonly LOG_DIR="$PROJ_HOME/logs"
 readonly LOG_FILE="$LOG_DIR/proj.log"
 readonly VERSION="2.0.2"
+readonly PROJ_SCAN_DIR="${PROJ_SCAN_DIR:-$HOME/projects}"
 
 if [[ -t 1 ]]; then
 	C_RESET='\033[0m'
@@ -1023,7 +1024,7 @@ cmd_init() {
 	printf "\n"
 	_init_dirs
 
-	local scan_dir="$HOME/projects"
+	local scan_dir="${1:-$PROJ_SCAN_DIR}"
 	if [[ -d "$scan_dir" ]]; then
 		printf "  Scanning %s for projects...\n" "$(_trim "$scan_dir" $((cols - 14)))"
 		local count=0
