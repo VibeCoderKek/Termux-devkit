@@ -2,6 +2,15 @@
 
 set -e
 
+echo "checking dependencies..."
+for cmd in tmux nvim jq fzf git zsh; do
+	if ! command -v "$cmd" &>/dev/null; then
+		echo "missing: $cmd — run: pkg install $cmd"
+		exit 1
+	fi
+done
+echo "dependencies ok"
+
 DOTFILES="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p ~/.config/nvim/lua
