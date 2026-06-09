@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # proj — Termux Terminal IDE / Workspace Manager
-# Version: 2.0.2
+# Version: 2.1.0
 # Location: ~/bin/proj
 # =============================================================================
 
@@ -16,7 +16,7 @@ readonly SESSION_DIR="$PROJ_HOME/sessions"
 readonly LAYOUT_DIR="$PROJ_HOME/layouts"
 readonly LOG_DIR="$PROJ_HOME/logs"
 readonly LOG_FILE="$LOG_DIR/proj.log"
-readonly VERSION="2.0.2"
+readonly VERSION="2.1.0"
 readonly PROJ_SCAN_DIR="${PROJ_SCAN_DIR:-$HOME/projects}"
 
 if [[ -t 1 ]]; then
