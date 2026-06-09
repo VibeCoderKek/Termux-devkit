@@ -16,5 +16,9 @@ source $PREFIX/share/fzf/key-bindings.zsh 2>/dev/null
 export PATH=$PREFIX/bin:$PATH
 export PATH="$HOME/bin:$PATH"
 
-pcd() { cd "$(proj cd "$@")"; }
-alias copygame="find ~/projects/testapp/h4ck -type f | sort | while read f; do echo \"=== \$f ===\"; cat \"\$f\"; echo; done | termux-clipboard-set"
+# proj cd wrapper — jump directly into a workspace
+pcd() {
+  local path
+  path="$(proj cd "$@")" || return 1
+  cd "$path"
+}
