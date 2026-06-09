@@ -1,7 +1,11 @@
 # proj
 
 A lightweight terminal-first development environment for Android powered by Termux, Neovim, tmux, fzf, and Git.
+[
 
+![asciicast](https://asciinema.org/a/XEPYw45ZXmRNp5kQ.svg)
+
+](https://asciinema.org/a/XEPYw45ZXmRNp5kQ)
 **Version:** 2.1.0
 
 ---
