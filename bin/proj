@@ -549,6 +549,12 @@ _preview_workspace() {
 # =============================================================================
 # cmd_list — adaptive table (retains existing logic, uses shared _trim/_cols)
 # =============================================================================
+
+_git_dirty() {
+	local path="$1"
+	git -C "$path" status --porcelain 2>/dev/null | grep -q . && echo "*" || echo ""
+}
+
 cmd_list() {
 	local found=false
 	local cols
@@ -590,6 +596,10 @@ cmd_list() {
 
 		branch="$(jq -r '.branch // ""' "$f")"
 		branch="${branch:-—}"
+
+		local dirty
+		dirty="$(_git_dirty "$path")"
+		[[ -n "$dirty" ]] && branch="${branch}*"
 
 		last="$(jq -r '.last_opened // ""' "$f")"
 		rel_time="$(_relative_time "$last")"
