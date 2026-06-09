@@ -1121,6 +1121,31 @@ cmd_init() {
 # =============================================================================
 # cmd_help — adaptive separator in header, otherwise fixed heredoc is fine
 # =============================================================================
+
+cmd_log() {
+	local lines="${1:-50}"
+	if [[ ! -f "$LOG_FILE" ]]; then
+		echo "No log file found: $LOG_FILE"
+		return 1
+	fi
+	case "${2:-tail}" in
+	follow | -f)
+		tail -f "$LOG_FILE"
+		;;
+	grep)
+		local term="${3:-}"
+		[[ -z "$term" ]] && {
+			echo "Usage: proj log <n> grep <term>"
+			return 1
+		}
+		grep -i "$term" "$LOG_FILE" | tail -n "$lines"
+		;;
+	*)
+		tail -n "$lines" "$LOG_FILE"
+		;;
+	esac
+}
+
 cmd_help() {
 	local cols
 	cols="$(_cols)"
@@ -1146,7 +1171,9 @@ cmd_help() {
     proj session list
     proj session clear  <name>
     proj init                 Scan ~/projects and register all
-		proj update [name]        Refresh branch and type metadata
+    proj update [name]        Refresh branch and type metadata
+    proj log [n] [follow|-f]  View last n log lines (default 50), or follow
+    proj log [n] grep <term>  Grep log for term
     proj doctor               Check dependencies
     proj help                 This help
 
@@ -1226,6 +1253,10 @@ _hook_pane_died)
 update)
 	shift
 	cmd_update "$@"
+	;;
+log)
+	shift
+	cmd_log "$@"
 	;;
 *)
 	echo "Unknown command: $1"
