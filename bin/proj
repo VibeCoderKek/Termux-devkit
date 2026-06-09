@@ -1002,7 +1002,8 @@ _open_workspace() {
 	if [[ -n "$dev_cmd" ]]; then
 		_tmux_launch_server "$session" "$dev_cmd"
 	fi
-	_lock_write "$name" "$session" "" "" "$dev_cmd"
+
+	lock_write "$name" "$session" "" "" "$dev_cmd"
 	tmux select-window -t "${session}:nvim" 2>/dev/null || true
 	_info "Attaching to session: $session"
 	tmux attach-session -t "$session"
