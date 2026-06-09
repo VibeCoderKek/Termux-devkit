@@ -1195,6 +1195,74 @@ cmd_sync() {
 		"$pulled" "$clean" "$skipped" "$failed"
 }
 
+cmd_dashboard() {
+	local delay="${1:-3}"
+	local tmp
+	tmp="$(mktemp)"
+
+	_dashboard_render() {
+		local cols rows
+		cols="$(_cols)"
+		rows="$(tput lines 2>/dev/null || echo 24)"
+
+		printf "\033[H\033[2J"
+		printf "\n  proj dashboard  $(date '+%H:%M:%S')\n"
+		_separator "$cols"
+		printf "\n"
+
+		printf "  %-20s  %-10s  %-22s  %-6s  %s\n" \
+			"NAME" "TYPE" "BRANCH" "STATUS" "LAST"
+		_separator "$cols"
+
+		for f in "$WS_DIR"/*.json; do
+			[[ -f "$f" ]] || continue
+			local n type path branch last rel dirty live_str
+			n="$(jq -r '.name' "$f")"
+			type="$(jq -r '.type' "$f")"
+			path="$(jq -r '.path' "$f")"
+			branch="$(jq -r '.branch // ""' "$f")"
+			last="$(jq -r '.last_opened // ""' "$f")"
+			rel="$(_relative_time "$last")"
+			dirty="$(_git_dirty "$path")"
+			[[ -n "$dirty" ]] && branch="${branch}*"
+			live_str="idle"
+			if _lock_exists "$n"; then
+				local sess
+				sess="$(_lock_read "$n" session)"
+				tmux has-session -t "$sess" 2>/dev/null && live_str="live" || true
+			fi
+			printf "  %-20s  %-10s  %-22s  %-6s  %s\n" \
+				"$(_trim "$n" 20)" \
+				"$(_trim "$type" 10)" \
+				"$(_trim "$branch" 22)" \
+				"$live_str" \
+				"$(_trim "$rel" 10)"
+		done
+
+		printf "\n"
+		_separator "$cols"
+		printf "  q quit  o open  r refresh\n"
+	}
+
+	# Interactive loop
+	while true; do
+		_dashboard_render
+		read -t "$delay" -n1 key 2>/dev/null || key=""
+		case "$key" in
+		q | Q) break ;;
+		o | O)
+			printf "\n  Workspace name: "
+			read -r pick
+			[[ -n "$pick" ]] && cmd_open "$pick"
+			break
+			;;
+		r | R) continue ;;
+		esac
+	done
+
+	rm -f "$tmp"
+}
+
 cmd_log() {
 	local lines="${1:-50}"
 	if [[ ! -f "$LOG_FILE" ]]; then
@@ -1248,6 +1316,7 @@ cmd_help() {
     proj log [n] [follow|-f]  View last n log lines (default 50), or follow
     proj log [n] grep <term>  Grep log for term
     proj sync   [name]        Pull latest for all workspaces (skips dirty)
+    proj dashboard            Live workspace overview (q quit, o open)
     proj doctor               Check dependencies
     proj help                 This help
 
@@ -1335,6 +1404,10 @@ log)
 sync)
 	shift
 	cmd_sync "$@"
+	;;
+dashboard)
+	shift
+	cmd_dashboard "$@"
 	;;
 *)
 	echo "Unknown command: $1"
