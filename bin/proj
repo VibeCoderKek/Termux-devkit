@@ -297,14 +297,16 @@ _cleanup_locks() {
 	local count=0
 	for lf in "$RUN_DIR"/*.lock; do
 		[[ -f "$lf" ]] || continue
-		local name session nvim_pid
+		local name session nvim_pid server_pid
 		name="$(basename "$lf" .lock)"
 		session="$(_lock_read "$name" session)"
 		nvim_pid="$(_lock_read "$name" nvim_pid)"
-		local session_alive=false pid_alive=false
+		server_pid="$(_lock_read "$name" server_pid)"
+		local session_alive=false pid_alive=false server_alive=false
 		tmux has-session -t "$session" 2>/dev/null && session_alive=true || true
-		_pid_alive "$nvim_pid" && pid_alive=true || true
-		if ! $session_alive && ! $pid_alive; then
+		[[ "$nvim_pid" != "pending" ]] && _pid_alive "$nvim_pid" && pid_alive=true || true
+		_pid_alive "$server_pid" && server_alive=true || true
+		if ! $session_alive && ! $pid_alive && ! $server_alive; then
 			_warn "Removing stale lock for: $name"
 			rm -f "$lf"
 			count=$((count + 1))
