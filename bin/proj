@@ -342,16 +342,52 @@ _ensure_layout() {
 	local type="$1"
 	local lf="$LAYOUT_DIR/${type}.conf"
 	[[ -f "$lf" ]] && return 0
-	echo "# Layout for type: $type" >"$lf"
+	case "$type" in
+	node)
+		printf "windows=nvim,server,shell\nserver_cmd=npm run dev\n" >"$lf"
+		;;
+	python)
+		printf "windows=nvim,server,shell\nserver_cmd=python main.py\n" >"$lf"
+		;;
+	rust)
+		printf "windows=nvim,build,shell\nserver_cmd=cargo run\n" >"$lf"
+		;;
+	go)
+		printf "windows=nvim,build,shell\nserver_cmd=go run .\n" >"$lf"
+		;;
+	lua)
+		printf "windows=nvim,shell\nserver_cmd=\n" >"$lf"
+		;;
+	*)
+		printf "windows=nvim,shell\nserver_cmd=\n" >"$lf"
+		;;
+	esac
+}
+
+_layout_read() {
+	local type="$1" field="$2"
+	local lf="$LAYOUT_DIR/${type}.conf"
+	[[ -f "$lf" ]] && grep "^${field}=" "$lf" | cut -d= -f2- || echo ""
 }
 
 _tmux_create_session() {
 	local session="$1" path="$2" type="$3" dev_cmd="$4" name="$5"
-	tmux new-session -d -s "$session" -n "nvim" -c "$path"
-	if [[ -n "$dev_cmd" ]]; then
-		tmux new-window -t "$session" -n "server" -c "$path"
-	fi
-	tmux new-window -t "$session" -n "shell" -c "$path"
+	_ensure_layout "$type"
+	local windows
+	windows="$(_layout_read "$type" windows)"
+	[[ -z "$windows" ]] && windows="nvim,shell"
+
+	local first=true
+	IFS=',' read -ra win_list <<<"$windows"
+	for win in "${win_list[@]}"; do
+		if $first; then
+			tmux new-session -d -s "$session" -n "$win" -c "$path"
+			first=false
+		else
+			tmux new-window -t "$session" -n "$win" -c "$path"
+		fi
+	done
+
 	tmux set-option -t "$session" automatic-rename off
 	tmux set-option -t "$session" allow-rename off
 	local type_label="${TYPE_LABELS[$type]:-Generic}"
