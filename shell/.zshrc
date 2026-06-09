@@ -1,3 +1,16 @@
+# proj banner on shell start
+cat << 'EOF'
+                                        
+  ██████╗ ██████╗  ██████╗      ██╗    
+  ██╔══██╗██╔══██╗██╔═══██╗     ██║    
+  ██████╔╝██████╔╝██║   ██║     ██║    
+  ██╔═══╝ ██╔══██╗██║   ██║██   ██║    
+  ██║     ██║  ██║╚██████╔╝╚█████╔╝    
+  ╚═╝     ╚═╝  ╚═╝ ╚═════╝  ╚════╝     
+                                        
+EOF
+proj list
+
 eval "$(starship init zsh)"
 alias ls='eza --icons'
 alias ll='eza -la --icons'
