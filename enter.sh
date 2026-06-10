@@ -10,7 +10,7 @@ clear
 
 if command -v toilet &>/dev/null; then
 	printf "${MAG}${BLD}"
-	toilet -f future --filter border PROJ
+  toilet -f future --filter border PROJ | lolcat --freq 0.5 --seed 40
 	printf "${RST}\n"
 elif command -v figlet &>/dev/null; then
 	printf "${MAG}${BLD}"
