@@ -8,9 +8,9 @@ BLD=$(printf '\033[1m')
 
 clear
 
-if command -v toilet &>/dev/null; then
+if command -v figlet &>/dev/null; then
 	printf "${MAG}${BLD}"
-  toilet -f future --filter border PROJ | lolcat --freq 0.5 --seed 40
+  figlet -d /data/data/com.termux/files/usr/share/figlet -f bigascii12 PROJ | lolcat --freq 0.2 --seed 60
 	printf "${RST}\n"
 elif command -v figlet &>/dev/null; then
 	printf "${MAG}${BLD}"
