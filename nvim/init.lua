@@ -19,6 +19,11 @@ vim.opt.clipboard = "unnamedplus"
 
 vim.g.mapleader = " "
 
+-- CODEIUM DISABLE AUTO SERVER DOWNLOAD (ANDROID FIX)
+vim.g.codeium_disable_bindings = 1
+vim.g.codeium_manual = true
+vim.g.codeium_no_auto_server = true
+
 -- =========================================================
 -- LAZY.NVIM BOOTSTRAP
 -- =========================================================
@@ -27,13 +32,13 @@ local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
 
 if not vim.loop.fs_stat(lazypath) then
 	vim.fn.system({
-		"git",
-		"clone",
-		"--filter=blob:none",
-		"https://github.com/folke/lazy.nvim.git",
-		"--branch=stable",
-		lazypath,
-	})
+"git",
+"clone",
+"--filter=blob:none",
+"https://github.com/folke/lazy.nvim.git",
+"--branch=stable",
+lazypath,
+})
 end
 
 vim.opt.rtp:prepend(lazypath)
@@ -43,24 +48,24 @@ vim.opt.rtp:prepend(lazypath)
 -- =========================================================
 
 require("lazy").setup({
-	spec = {
-		{ "nvim-treesitter/nvim-treesitter", build = ":TSUpdate" },
+spec = {
+{ "nvim-treesitter/nvim-treesitter", build = ":TSUpdate" },
 
-		{
-			"nvim-telescope/telescope.nvim",
-			dependencies = { "nvim-lua/plenary.nvim" },
-		},
+{
+"nvim-telescope/telescope.nvim",
+dependencies = { "nvim-lua/plenary.nvim" },
+},
 
-		{
-			"nvim-tree/nvim-tree.lua",
-			dependencies = { "nvim-tree/nvim-web-devicons" },
-		},
+{
+"nvim-tree/nvim-tree.lua",
+dependencies = { "nvim-tree/nvim-web-devicons" },
+},
 
-		{ "lewis6991/gitsigns.nvim" },
+{ "lewis6991/gitsigns.nvim" },
 
-		{
-			"neovim/nvim-lspconfig",
-			config = function()
+{
+"neovim/nvim-lspconfig",
+config = function()
 				require("lspconfig")
 			end,
 		},
@@ -82,10 +87,10 @@ require("lazy").setup({
 			priority = 1000,
 			config = function()
 				require("tokyonight").setup({
-					style = "night",
-					transparent = false,
-					terminal_colors = true,
-				})
+style = "night",
+transparent = false,
+terminal_colors = true,
+})
 				vim.cmd("colorscheme tokyonight")
 			end,
 		},
@@ -94,20 +99,20 @@ require("lazy").setup({
 			dependencies = { "nvim-tree/nvim-web-devicons" },
 			config = function()
 				require("lualine").setup({
-					options = {
-						theme = "tokyonight",
-						component_separators = { left = "", right = "" },
-						section_separators = { left = "", right = "" },
-					},
-					sections = {
-						lualine_a = { "mode" },
-						lualine_b = { "branch", "diff", "diagnostics" },
-						lualine_c = { { "filename", path = 1 } },
-						lualine_x = { "encoding", "filetype" },
-						lualine_y = { "progress" },
-						lualine_z = { "location" },
-					},
-				})
+options = {
+theme = "tokyonight",
+component_separators = { left = "", right = "" },
+section_separators = { left = "", right = "" },
+},
+sections = {
+lualine_a = { "mode" },
+lualine_b = { "branch", "diff", "diagnostics" },
+lualine_c = { { "filename", path = 1 } },
+lualine_x = { "encoding", "filetype" },
+lualine_y = { "progress" },
+lualine_z = { "location" },
+},
+})
 			end,
 		},
 		{
@@ -116,23 +121,24 @@ require("lazy").setup({
 			config = function()
 				local wk = require("which-key")
 				wk.setup({
-					delay = 400,
-					icons = { rules = false },
-				})
+delay = 400,
+icons = { rules = false },
+})
 				wk.add({
-					{ "<leader>e", desc = "Toggle file tree" },
-					{ "<leader>f", desc = "Find files" },
-					{ "<leader>g", desc = "Live grep" },
-					{ "<leader>b", desc = "Buffers" },
-					{ "<leader>w", desc = "Save file" },
-					{ "<leader>q", desc = "Quit" },
-					{ "<leader>h", desc = "Clear search highlight" },
-					{ "<leader>rn", desc = "LSP rename" },
-					{ "<leader>gg", desc = "Lazygit" },
-					{ "<leader>xx", desc = "Trouble diagnostics" },
-					{ "gd", desc = "LSP go to definition" },
-					{ "K", desc = "LSP hover" },
-				})
+{ "<leader>e", desc = "Toggle file tree" },
+{ "<leader>f", desc = "Find files" },
+{ "<leader>g", desc = "Live grep" },
+{ "<leader>b", desc = "Buffers" },
+{ "<leader>w", desc = "Save file" },
+{ "<leader>q", desc = "Quit" },
+{ "<leader>h", desc = "Clear search highlight" },
+{ "<leader>rn", desc = "LSP rename" },
+{ "<leader>gg", desc = "Lazygit" },
+{ "<leader>xx", desc = "Trouble diagnostics" },
+{ "<leader>aa", desc = "Avante toggle" },
+{ "gd", desc = "LSP go to definition" },
+{ "K", desc = "LSP hover" },
+})
 			end,
 		},
 		{
@@ -163,21 +169,21 @@ require("lazy").setup({
 			"stevearc/conform.nvim",
 			config = function()
 				require("conform").setup({
-					formatters_by_ft = {
-						javascript = { "prettier" },
-						typescript = { "prettier" },
-						html = { "prettier" },
-						css = { "prettier" },
-						json = { "prettier" },
-						python = { "black" },
-						sh = { "shfmt" },
-						lua = { "stylua" },
-					},
-					format_on_save = {
-						timeout_ms = 500,
-						lsp_fallback = true,
-					},
-				})
+formatters_by_ft = {
+javascript = { "prettier" },
+typescript = { "prettier" },
+html = { "prettier" },
+css = { "prettier" },
+json = { "prettier" },
+python = { "black" },
+sh = { "shfmt" },
+lua = { "stylua" },
+},
+format_on_save = {
+timeout_ms = 500,
+lsp_fallback = true,
+},
+})
 			end,
 		},
 		{
@@ -193,11 +199,50 @@ require("lazy").setup({
 			main = "ibl",
 			config = function()
 				require("ibl").setup({
-					indent = { char = "│" },
-					scope = { enabled = true },
-				})
+indent = { char = "│" },
+scope = { enabled = true },
+})
 			end,
 		},
+		{
+			"yetone/avante.nvim",
+			event = "VeryLazy",
+			build = "make",
+			dependencies = {
+				"nvim-lua/plenary.nvim",
+				"MunifTanjim/nui.nvim",
+				"nvim-tree/nvim-web-devicons",
+			},
+			config = function()
+				require("avante").setup({
+provider = "ollama",
+vendors = {
+ollama = {
+["local"] = true,
+endpoint = "http://127.0.0.1:11434",
+model = "qwen2.5-coder:1.5b",
+parse_curl_args = function(opts, code_opts)
+return {
+url = opts.endpoint .. "/api/chat",
+headers = {
+["Content-Type"] = "application/json",
+},
+body = {
+model = opts.model,
+messages = code_opts.messages,
+stream = true,
+},
+}
+end,
+parse_response_data = function(data_stream, event_state, opts)
+require("avante.providers").openai.parse_response(data_stream, event_state, opts)
+end,
+},
+},
+})
+			end,
+		},
+		{ "MunifTanjim/nui.nvim" },
 	},
 })
 
@@ -206,8 +251,8 @@ require("lazy").setup({
 -- =========================================================
 
 require("nvim-tree").setup({
-	view = { width = 18 },
-	git = { enable = true },
+view = { width = 18 },
+git = { enable = true },
 })
 
 -- =========================================================
@@ -225,14 +270,14 @@ local cmp = require("cmp")
 local capabilities = require("cmp_nvim_lsp").default_capabilities()
 
 cmp.setup({
-	snippet = {
-		expand = function(args)
-			luasnip.lsp_expand(args.body)
-		end,
-	},
-	mapping = cmp.mapping.preset.insert({
-		["<Tab>"] = cmp.mapping(function(fallback)
-			if cmp.visible() then
+snippet = {
+expand = function(args)
+luasnip.lsp_expand(args.body)
+end,
+},
+mapping = cmp.mapping.preset.insert({
+["<Tab>"] = cmp.mapping(function(fallback)
+if cmp.visible() then
 				cmp.select_next_item()
 			elseif luasnip.expand_or_jumpable() then
 				luasnip.expand_or_jump()
@@ -241,7 +286,7 @@ cmp.setup({
 			end
 		end, { "i", "s" }),
 		["<S-Tab>"] = cmp.mapping(function(fallback)
-			if cmp.visible() then
+if cmp.visible() then
 				cmp.select_prev_item()
 			elseif luasnip.jumpable(-1) then
 				luasnip.jump(-1)
@@ -273,8 +318,8 @@ local servers = {
 
 for _, server in ipairs(servers) do
 	vim.lsp.config(server, {
-		capabilities = capabilities,
-	})
+capabilities = capabilities,
+})
 end
 
 vim.lsp.enable(servers)
