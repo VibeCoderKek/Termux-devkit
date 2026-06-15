@@ -349,3 +349,11 @@ vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename)
 -- =========================================================
 
 require("proj")
+
+-- =========================================================
+-- AVANTE KEYMAPS
+-- =========================================================
+
+vim.keymap.set("n", "<leader>ao", ":AvanteToggle<CR>", { desc = "Avante toggle" })
+vim.keymap.set("n", "<leader>af", ":AvanteFocus<CR>", { desc = "Avante focus" })
+vim.keymap.set("n", "<leader>ac", ":AvanteClose<CR>", { desc = "Avante close" })
