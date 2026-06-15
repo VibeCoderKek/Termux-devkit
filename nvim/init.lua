@@ -216,7 +216,7 @@ scope = { enabled = true },
 			config = function()
 				require("avante").setup({
 provider = "ollama",
-vendors = {
+providers = {
 ollama = {
 ["local"] = true,
 endpoint = "http://127.0.0.1:11434",
@@ -224,9 +224,7 @@ model = "qwen2.5-coder:1.5b",
 parse_curl_args = function(opts, code_opts)
 return {
 url = opts.endpoint .. "/api/chat",
-headers = {
-["Content-Type"] = "application/json",
-},
+headers = { ["Content-Type"] = "application/json" },
 body = {
 model = opts.model,
 messages = code_opts.messages,
