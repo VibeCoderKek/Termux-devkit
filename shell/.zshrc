@@ -88,3 +88,9 @@ fi
 
 # ═══════════════════════════════════════════════════════════
 
+alias cprojekt="cat src/types/index.ts src/constants/theme.ts src/constants/data.ts src/utils/dateHelpers.ts src/utils/xpHelpers.ts src/storage/storage.ts src/hooks/useStorage.ts src/hooks/useXP.ts src/components/TabBar.tsx src/components/QuestCard.tsx src/components/AddQuestModal.tsx src/components/AddGuildModal.tsx src/screens/QuestsScreen.tsx src/screens/GuildsScreen.tsx src/screens/CharacterScreen.tsx src/app/_layout.tsx \"src/app/(tabs)/_layout.tsx\" \"src/app/(tabs)/index.tsx\" | termux-clipboard-set"
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+[ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+
+alias vector-snapshot='termux-clipboard-set "$(git branch --show-current; echo ''; git log --oneline -5; echo ''; echo '=== PROJECT SNAPSHOT ==='; find . -maxdepth 3 -type f | sort; echo ''; echo '=== RESUME PROMPT ==='; echo 'Continue Vector from current GitFlow checkpoint. Maintain feature isolation.'; echo ''; echo '=== PRODUCT DIRECTION ==='; echo 'Professional-first, LeetCode-inspired. Editor is the hero. Not game-like.'; echo ''; echo '=== DESIGN PLAN ==='; echo 'Phase 1: Color system - replace yellow CTAs with neutral primary (touches every screen)'; echo 'Phase 2: Success modal - no emoji/Nice work, replace with pass/fail + runtime stats'; echo 'Phase 3: Editor UX - CodeMirror/WebView upgrade, keyboard toolbar, bracket matching'; echo 'Phase 4: Lock states - remove emoji padlocks, greyed text + subtle icon only'; echo 'Phase 5: Module lists - information-dense, difficulty tags, acceptance rate'; echo 'Phase 6: Onboarding - remove XP/Roles gamification slide, lead with curriculum'; echo ''; echo '=== CURRENT FOCUS ==='; echo 'Phase 1: CTA color system overhaul';)"'
